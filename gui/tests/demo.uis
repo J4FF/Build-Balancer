@@ -1,0 +1,59 @@
+#!args --demo
+# The whole window with made-up machines and jobs (--demo: nothing is contacted): every page
+# opens, the one-click removal works, a pairing shows its code.  Run it from the repository's
+# root; the pictures land in target/shots/.
+#
+#   mkdir -p target/shots
+#   target/debug/BuildBalancer --demo --script gui/tests/demo.uis
+size 1040 760
+theme light
+
+# this machine: what it lends, what runs, the projects kept here
+expect "Leistung verleihen" exists
+expect "Projekte auf diesem Gerät" exists
+expect text:"jfWord" exists
+shot target/shots/this-machine.png
+# one click and a project is gone (404: the second row's button; the first is in use and disabled)
+expect #400 disabled
+click #404
+expect text:"jfWord" missing
+expect text:"netzlabor-alt" exists
+click "Alles entfernen"
+expect text:"netzlabor-alt" missing
+# the two notes about it go by themselves
+wait 7000
+
+# the main machine's workers
+click #21
+expect "Gerät hinzufügen" exists
+expect text:"tower" exists
+shot target/shots/machines.png
+click "Gerät hinzufügen"
+expect text:"K7QF-2M9X-PD4T" exists
+shot target/shots/pairing.png
+click "Abbrechen"
+expect text:"K7QF-2M9X-PD4T" missing
+
+# jobs and one job's result
+click #22
+expect text:"Ausgabe (das Ende)" exists
+shot target/shots/jobs.png
+
+# a project's tasks
+click #23
+expect text:"linux-release" exists
+expect "Ausführen" exists
+shot target/shots/project.png
+
+# pairing this machine / making it the main machine
+click #24
+expect "Koppeln" exists
+click "Das ist mein Hauptgerät"
+expect "Einrichten" exists
+shot target/shots/connect.png
+
+# dark, and larger
+theme dark
+scale 150
+click #20
+shot target/shots/this-machine-dark-150.png

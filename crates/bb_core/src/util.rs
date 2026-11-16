@@ -160,7 +160,14 @@ pub fn rel_ok(p: &str) -> bool {
             && !part.chars().any(|c| matches!(c, '\\' | ':' | '\0' | '<' | '>' | '"' | '|' | '?' | '*') || (c as u32) < 32)
             && !part.ends_with(' ')
             && !part.ends_with('.')
+            && !windows_device(part)
     })
+}
+
+/// a name Windows keeps for a device whatever its extension: "NUL", "aux.txt", "COM1"
+fn windows_device(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit() && stem.as_bytes()[3] != b'0')
 }
 
 /// the path of a relative name ('/' between its parts) below a folder, in this system's form

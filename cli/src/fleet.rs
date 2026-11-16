@@ -87,15 +87,29 @@ pub fn why_not(v: &WorkerView, n: &Needs, cpu: u32, ram: u64) -> Option<String> 
     if !v.online {
         return Some(if v.idle_secs < 0 { String::from("never seen online (is bb-worker running there?)") } else { format!("offline for {}", bb_core::util::dur_text(v.idle_secs as u64 * 1000)) });
     }
-    let Some(s) = &v.status else { return Some(String::from("has not reported yet")) };
+    if v.status.is_none() {
+        return Some(String::from("has not reported yet"));
+    }
+    unmet(v, n, cpu, ram)
+}
+
+/// Which of a job's needs a worker does not meet, as far as it is known: its system from the
+/// pairing, everything else from its last report (None: nothing known speaks against it).
+/// Being online is not asked here -- a worker that is away is still a Linux or a Windows one.
+pub fn unmet(v: &WorkerView, n: &Needs, cpu: u32, ram: u64) -> Option<String> {
+    let (os, arch) = match &v.status {
+        Some(s) => (s.os.as_str(), s.arch.as_str()),
+        None => (v.paired.os.as_str(), v.paired.arch.as_str()),
+    };
+    if !n.os.is_empty() && !os.is_empty() && os != n.os {
+        return Some(format!("runs {}", os));
+    }
+    if !n.arch.is_empty() && !arch.is_empty() && arch != n.arch {
+        return Some(format!("is {}", arch));
+    }
+    let s = v.status.as_ref()?;
     if s.protocol != bb_core::PROTOCOL {
         return Some(format!("speaks protocol {} (this bb: {}); update it", s.protocol, bb_core::PROTOCOL));
-    }
-    if !n.os.is_empty() && s.os != n.os {
-        return Some(format!("runs {}", s.os));
-    }
-    if !n.arch.is_empty() && s.arch != n.arch {
-        return Some(format!("is {}", s.arch));
     }
     let want_cpu = n.cpu.max(cpu);
     if want_cpu > s.offer.cpu {
@@ -126,11 +140,15 @@ pub fn pick<'a>(views: &'a [WorkerView], name: &str, n: &Needs, cpu: u32, ram: u
     if !name.is_empty() && name != "auto" {
         let v = views.iter().find(|v| v.paired.id == name || v.paired.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no worker \"{}\"; paired: {}", name, views.iter().map(|v| v.paired.name.as_str()).collect::<Vec<_>>().join(", ")))?;
         return match why_not(v, n, cpu, ram) {
-            // a named worker that is offline still gets the job: it starts once the worker is back
-            Some(why) if v.admitted && !v.online => {
-                bb_core::util::err(&format!("note: {} is {}; the job waits at the relay until it is back\n", v.paired.name, why));
-                Ok(v)
-            }
+            // a named worker that is offline still gets the job, which starts once the worker is
+            // back -- unless what is known of it says it never could run it
+            Some(why) if v.admitted && !v.online => match unmet(v, n, cpu, ram) {
+                Some(never) => Err(format!("worker {} cannot take this job: it {}", v.paired.name, never)),
+                None => {
+                    bb_core::util::err(&format!("note: {} is {}; the job waits at the relay until it is back\n", v.paired.name, why));
+                    Ok(v)
+                }
+            },
             Some(why) => Err(format!("worker {} cannot take this job: it {}", v.paired.name, why)),
             None => Ok(v),
         };

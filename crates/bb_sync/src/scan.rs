@@ -218,6 +218,12 @@ pub fn expand(root: &str, patterns: &[String], limit: usize) -> Result<Vec<Strin
         }
         let abs = bb_core::util::below(root, pat);
         let plain = !pat.split('/').any(base::pattern::has_glob);
+        // The way to the outputs has to consist of the project's own folders: through a link
+        // ("out" pointing somewhere else on the worker) files from outside would be collected.
+        let fixed = if plain { String::from(plat::fs::parent(pat)) } else { literal_prefix(pat) };
+        if let Some(link) = link_on_way(root, &fixed) {
+            return Err(format!("output pattern \"{}\": \"{}\" is a link, and outputs are only collected from the project's own folders", raw, link));
+        }
         match (plain, plat::fs::lstat(&abs)) {
             (true, Some(m)) if m.is_file() => out.push(String::from(pat)),
             (true, Some(m)) if m.is_dir() && !m.is_symlink() => walk_all(root, pat, &mut |p| out.push(String::from(p)), limit)?,
@@ -242,12 +248,30 @@ pub fn expand(root: &str, patterns: &[String], limit: usize) -> Result<Vec<Strin
     Ok(out)
 }
 
+/// the first folder on the way to (and including) `rel` below root that is a link
+fn link_on_way(root: &str, rel: &str) -> Option<String> {
+    let mut cur = String::new();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        if !cur.is_empty() {
+            cur.push('/');
+        }
+        cur += part;
+        if plat::fs::lstat(&bb_core::util::below(root, &cur)).is_some_and(|m| m.is_symlink()) {
+            return Some(cur);
+        }
+    }
+    None
+}
+
 /// every file below a folder of root (links not followed), at most `limit` visited
 fn walk_all(root: &str, start: &str, on: &mut dyn FnMut(&str), limit: usize) -> Result<(), String> {
     let mut todo = alloc::vec![String::from(start)];
     let mut seen = 0usize;
     while let Some(rel) = todo.pop() {
-        for e in plat::fs::read_dir(&bb_core::util::below(root, &rel)).unwrap_or_default() {
+        // a folder that cannot be listed must not look like an empty one: outputs would be missing
+        let abs = bb_core::util::below(root, &rel);
+        let list = plat::fs::read_dir(&abs).ok_or_else(|| format!("{} cannot be listed", abs))?;
+        for e in list {
             let path = if rel.is_empty() { e.name.clone() } else { format!("{}/{}", rel, e.name) };
             match e.kind {
                 FileKind::Dir => todo.push(path),

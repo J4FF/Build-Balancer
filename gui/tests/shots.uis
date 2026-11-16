@@ -1,0 +1,11 @@
+#args --demo --lang en
+# The pictures of the README (docs/img/), taken from the demo.  Run it from the repository's root:
+#
+#   target/debug/BuildBalancer --demo --lang en --script gui/tests/shots.uis
+size 1040 760
+theme light
+shot docs/img/this-machine.png
+click #21
+shot docs/img/machines.png
+click #22
+shot docs/img/jobs.png

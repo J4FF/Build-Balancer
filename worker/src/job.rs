@@ -15,6 +15,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicBool, AtomicU64};
 
 use bb_core::client::Relay;
 use bb_core::crypt;
@@ -24,7 +25,7 @@ use bb_core::util::{below, now, size_text, tick_ms};
 use bb_sync::{Apply, Known};
 
 use crate::config;
-use crate::{Running, Worker};
+use crate::engine::{Running, Worker};
 
 /// output relayed per job; beyond it only the file on the worker grows
 const LOG_RELAY_MAX: u64 = 32 << 20;
@@ -39,26 +40,30 @@ pub struct Emitter {
     key: [u8; 32],
     aad: Vec<u8>,
     channel: String,
+    stop: Arc<core::sync::atomic::AtomicBool>,
 }
 
 impl Emitter {
     pub fn new(w: &Worker, main: &str, job: &str) -> Emitter {
         let channel = proto::job_channel(main, job);
         let id = w.cfg.lock().id.clone();
-        Emitter { relay: w.relay.fork(), key: w.pair, aad: crypt::aad(&id, &channel), channel }
+        Emitter { relay: w.relay.fork(), key: w.pair, aad: crypt::aad(&id, &channel), channel, stop: w.stop.clone() }
     }
 
     /// Send an event, trying again for up to `patience` seconds while the relay cannot be
     /// reached -> whether it arrived.
     pub fn send(&self, e: &Event, patience: u64) -> bool {
         let sealed = crypt::seal(&self.key, &self.aad, j::text(&e.to_json()).as_bytes());
-        let end = tick_ms() + patience * 1000;
+        let start = tick_ms();
+        let end = start + patience * 1000;
         loop {
             match self.relay.ch_append(&self.channel, &sealed) {
                 Ok(_) => return true,
                 // not reachable right now: wait; anything else (removed from the relay, channel full) will not get better
                 Err(e) if e.status == 0 || e.status >= 500 && e.status != 507 => {
-                    if tick_ms() >= end || plat::service::stop_requested() {
+                    // a worker that is stopping tries a little longer for what must arrive, then lets go
+                    let stopping = self.stop.load(Relaxed) || plat::service::stop_requested();
+                    if tick_ms() >= end.min(if stopping { start + 5000 } else { u64::MAX }) {
                         return false;
                     }
                     plat::sleep_ms(1500);
@@ -82,7 +87,9 @@ fn incomplete_tail(b: &[u8]) -> usize {
     0
 }
 
-/// a job's output on its way: to the file at once, to the main machine in pieces
+/// A job's output on its way: to the file at once, to the main machine through a thread of
+/// its own -- a relay that is slow or away must never hold the loop that watches the job (its
+/// pipes would fill, its limits would go unchecked).
 struct LogBuf {
     file: Option<plat::File>,
     file_len: u64,
@@ -93,12 +100,49 @@ struct LogBuf {
     carry: [Vec<u8>; 2],
     relayed: u64,
     cut: bool,
-    lost: u64,
     last: u64,
+    tx: Option<plat::sync::Sender<(bool, String)>>,
+    sender: Option<plat::Thread>,
+    /// bytes that could not be sent (the queue was full, or the relay away for too long)
+    lost: Arc<AtomicU64>,
+    /// the job is over: nothing waits long for the relay any more
+    closing: Arc<AtomicBool>,
+}
+
+/// the pieces of output that wait for the relay; beyond them output is only in the file
+const LOG_QUEUE: usize = 256;
+
+/// the thread that sends a job's output, piece by piece in the order it came
+fn log_sender(em: Emitter, rx: plat::sync::Receiver<(bool, String)>, lost: Arc<AtomicU64>, closing: Arc<AtomicBool>) {
+    let mut told = 0u64;
+    let mut gave_up = false;
+    while let Some((err, data)) = rx.recv() {
+        let ending = closing.load(Relaxed);
+        // at the end of a job one failure is enough: the rest stays in the file
+        if gave_up || !em.send(&Event::Log { err, data: data.clone() }, if ending { 3 } else { 20 }) {
+            lost.fetch_add(data.len() as u64, Relaxed);
+            gave_up = ending;
+            continue;
+        }
+        let l = lost.load(Relaxed);
+        if l > told {
+            let note = format!("[build balancer] {} of output could not be sent while the relay was unreachable; all of it is in the worker's job folder\n", size_text(l - told));
+            told = l;
+            em.send(&Event::Log { err: true, data: note }, 3);
+        }
+    }
+    let l = lost.load(Relaxed);
+    if l > told {
+        em.send(&Event::Log { err: true, data: format!("[build balancer] {} of output could not be sent; all of it is in the worker's job folder\n", size_text(l - told)) }, 3);
+    }
 }
 
 impl LogBuf {
-    fn new(job_dir: &str) -> LogBuf {
+    fn new(job_dir: &str, em: Emitter) -> LogBuf {
+        let (tx, rx) = plat::sync::channel::<(bool, String)>(LOG_QUEUE);
+        let (lost, closing) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
+        let (l2, c2) = (lost.clone(), closing.clone());
+        let sender = plat::thread_spawn(0, alloc::boxed::Box::new(move || log_sender(em, rx, l2, c2)));
         LogBuf {
             file: plat::File::open(&plat::fs::join(job_dir, "out.log"), plat::FO_WRITE),
             file_len: 0,
@@ -107,8 +151,30 @@ impl LogBuf {
             carry: [Vec::new(), Vec::new()],
             relayed: 0,
             cut: false,
-            lost: 0,
             last: tick_ms(),
+            // without the thread the output still reaches the file
+            tx: sender.is_some().then_some(tx),
+            sender,
+            lost,
+            closing,
+        }
+    }
+
+    /// hand a piece to the sending thread without ever waiting (a full queue counts as lost)
+    fn queue(&self, err: bool, text: String) {
+        let len = text.len() as u64;
+        if self.tx.as_ref().is_none_or(|tx| tx.try_send((err, text)).is_err()) {
+            self.lost.fetch_add(len, Relaxed);
+        }
+    }
+
+    /// the job is over: hand over the rest and wait for the sending thread (the result follows the output)
+    fn finish(&mut self) {
+        self.flush(true);
+        self.closing.store(true, Relaxed);
+        self.tx = None;
+        if let Some(t) = self.sender.take() {
+            t.join();
         }
     }
 
@@ -127,8 +193,8 @@ impl LogBuf {
         self.pending += data.len();
     }
 
-    /// send what has gathered when it is enough, old enough, or `force`
-    fn flush(&mut self, em: &Emitter, force: bool) {
+    /// queue what has gathered when it is enough, old enough, or `force`
+    fn flush(&mut self, force: bool) {
         if self.pending == 0 || !(force || self.pending >= 32 << 10 || tick_ms() - self.last >= 300) {
             return;
         }
@@ -145,16 +211,10 @@ impl LogBuf {
                 continue;
             }
             self.relayed += text.len() as u64;
-            if !em.send(&Event::Log { err, data: text.clone() }, 4) {
-                self.lost += text.len() as u64;
-            } else if self.lost > 0 {
-                let note = format!("[build balancer] {} of output could not be sent while the relay was unreachable; all of it is in the worker's job folder\n", size_text(self.lost));
-                em.send(&Event::Log { err: true, data: note }, 4);
-                self.lost = 0;
-            }
+            self.queue(err, text);
             if self.relayed > LOG_RELAY_MAX {
                 self.cut = true;
-                em.send(&Event::Log { err: true, data: format!("[build balancer] output cut here after {}; the rest is in the worker's job folder\n", size_text(LOG_RELAY_MAX)) }, 4);
+                self.queue(true, format!("[build balancer] output cut here after {}; the rest is in the worker's job folder\n", size_text(LOG_RELAY_MAX)));
                 self.segs.clear();
                 break;
             }
@@ -169,11 +229,23 @@ fn set_state(w: &Worker, r: &Running, em: &Emitter, state: &str, detail: String)
     em.send(&Event::State { state: String::from(state), detail, time: now() }, 20);
 }
 
+/// Record a job's end in its folder and tell the main machine.  An end the relay did not take
+/// is sent again later (resend_pending): the main machine must never wait forever.
+pub fn finish(w: &Worker, spec: &JobSpec, done: &Done, patience: u64) {
+    let jd = config::job_dir(&w.dir, &spec.id);
+    if plat::file_exists(&plat::fs::join(&jd, "spec.json")) != 1 {
+        bb_core::util::put_file(&plat::fs::join(&jd, "spec.json"), j::pretty(&spec.to_json()).as_bytes());
+    }
+    bb_core::util::put_file(&plat::fs::join(&jd, "done.json"), j::pretty(&done.to_json()).as_bytes());
+    if Emitter::new(w, &spec.main, &spec.id).send(&Event::Done(done.clone()), patience) {
+        bb_core::util::put_file(&plat::fs::join(&jd, "sent"), b"1");
+    }
+}
+
 /// tell the main machine that a job will not run
 pub fn refuse(w: &Worker, spec: &JobSpec, state: &str, why: &str) {
     plat::log_info("job", &format!("{} refused: {}", spec.id, why));
-    let d = Done { state: String::from(state), exit: -1, error: String::from(why), time: now(), ..Done::default() };
-    Emitter::new(w, &spec.main, &spec.id).send(&Event::Done(d), 20);
+    finish(w, spec, &Done { state: String::from(state), exit: -1, error: String::from(why), time: now(), ..Done::default() }, 20);
 }
 
 /// the whole job; ends by giving its processors back and waking the scheduler
@@ -183,6 +255,8 @@ pub fn run(w: Arc<Worker>, r: Arc<Running>) {
     let jd = config::job_dir(&w.dir, &spec.id);
     plat::mkdir(&jd);
     bb_core::util::put_file(&plat::fs::join(&jd, "spec.json"), j::pretty(&spec.to_json()).as_bytes());
+    // from here on a restart finds a job that ran, not one that still waits its turn
+    bb_core::util::put_file(&plat::fs::join(&jd, "started"), b"1");
     plat::log_info("job", &format!("{} starts: {} ({} processors)", spec.id, spec.command_text(), r.cpu));
     let t0 = tick_ms();
     let mut done = Done { state: String::from(proto::ST_ERROR), exit: -1, ..Done::default() };
@@ -194,7 +268,9 @@ pub fn run(w: Arc<Worker>, r: Arc<Running>) {
     done.time = now();
     plat::log_info("job", &format!("{} ends: {} (exit {}){}", spec.id, done.state, done.exit, if done.error.is_empty() { String::new() } else { format!(" -- {}", done.error) }));
     bb_core::util::put_file(&plat::fs::join(&jd, "done.json"), j::pretty(&done.to_json()).as_bytes());
-    em.send(&Event::Done(done), 300);
+    if em.send(&Event::Done(done), 300) {
+        bb_core::util::put_file(&plat::fs::join(&jd, "sent"), b"1");
+    }
     // the workspace's size, for the quota and the status (the workspace stays held meanwhile)
     let wsd = config::ws_dir(&w.dir, &spec.project_id, &spec.slot);
     if plat::file_exists(&wsd) == 2 {
@@ -227,11 +303,14 @@ fn make_room(w: &Worker, spec: &JobSpec, need: u64) -> u64 {
         if need <= left {
             return left;
         }
-        let busy: Vec<(String, String)> = w.sched.lock().running.iter().map(|r| (r.spec.project_id.clone(), r.spec.slot.clone())).collect();
-        let victim = all.iter().filter(|x| !busy.iter().any(|b| b.0 == x.project_id && b.1 == x.slot) && !(x.project_id == spec.project_id && x.slot == spec.slot)).min_by_key(|x| x.used);
-        let Some(v) = victim else { return left };
+        // the one unused the longest that can be held free of jobs while it goes
+        let mut rest: Vec<&Workspace> = all.iter().filter(|x| !(x.project_id == spec.project_id && x.slot == spec.slot)).collect();
+        rest.sort_by_key(|x| x.used);
+        let Some(v) = rest.into_iter().find(|x| w.reserve_removal(&x.project_id, &x.slot)) else { return left };
         plat::log_info("disk", &format!("workspace {} / {} ({}) removed to make room", v.project, v.slot, size_text(v.bytes)));
-        if !bb_core::util::remove_tree(&config::ws_dir(&w.dir, &v.project_id, &v.slot)) {
+        let gone = bb_core::util::remove_tree(&config::ws_dir(&w.dir, &v.project_id, &v.slot));
+        w.release_removal(&v.project_id, &v.slot);
+        if !gone {
             return left;
         }
     }
@@ -324,7 +403,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
     set_state(w, r, em, proto::ST_RUNNING, spec.command_text());
     let mut p = bb_exec::spawn(&bb_exec::Spec { program, args, cwd, env, affinity: r.mask, low_priority })?;
 
-    let mut log = LogBuf::new(jd);
+    let mut log = LogBuf::new(jd, Emitter::new(w, &spec.main, &spec.id));
     let deadline = (spec.timeout > 0).then(|| tick_ms() + spec.timeout * 1000);
     let (used0, own0) = disk_used(w, spec);
     let free0 = plat::fs::free_space(&wsd).map_or(0, |f| f.0);
@@ -333,7 +412,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
     let mut stop: Option<(&str, String)> = None;
     let exit = loop {
         let any = p.pump(&mut |err, b| log.push(err, b));
-        log.flush(em, false);
+        log.flush(false);
         if let Some(code) = p.exited() {
             break code;
         }
@@ -345,7 +424,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
                 stop = Some((proto::ST_KILLED, why));
             } else if deadline.is_some_and(|d| t > d) {
                 stop = Some((proto::ST_KILLED, format!("time limit of {} reached", bb_core::util::dur_text(spec.timeout * 1000))));
-            } else if plat::service::stop_requested() {
+            } else if w.stopping() {
                 stop = Some((proto::ST_CANCELLED, String::from("the worker was stopped")));
             } else if t >= next_disk {
                 next_disk = t + 10_000;
@@ -383,7 +462,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
             plat::sleep_ms(10);
         }
     }
-    log.flush(em, true);
+    log.finish();
     r.rss.store(0, Relaxed);
     done.exit = exit as i64;
     done.peak_ram = peak;
@@ -420,26 +499,71 @@ fn collect(w: &Worker, relay: &Relay, tree_dir: &str, patterns: &[String]) -> Re
     Ok(bb_sync::upload(relay, &w.data, tree_dir, &tree, &mut |_, _| {})?.0)
 }
 
-/// Jobs that were running when the worker last stopped (power cut, kill): their main machine
-/// still waits for an end.  And job folders older than a week go.
-pub fn recover(w: &Worker) {
+/// What the job folders say when a worker starts (the disk only, nothing is sent):
+///   a job that waited its turn waits again -> the jobs to queue, the oldest first;
+///   a job that ran when the worker stopped (restart, power cut) ends as an error, which
+///     resend_pending tells its main machine;
+///   folders of another pairing go.
+pub fn recover(dir: &str, main_id: &str) -> Vec<JobSpec> {
+    let mut queue: Vec<JobSpec> = Vec::new();
+    let root = plat::fs::join(dir, "jobs");
+    for e in plat::fs::read_dir(&root).unwrap_or_default() {
+        let jd = plat::fs::join(&root, &e.name);
+        let has = |name: &str| plat::file_exists(&plat::fs::join(&jd, name)) == 1;
+        let spec = match j::load::<JobSpec>(&plat::fs::join(&jd, "spec.json")) {
+            Some(s) if s.main == main_id && s.id == e.name => s,
+            _ => {
+                bb_core::util::remove_tree(&jd);
+                continue;
+            }
+        };
+        if has("done.json") {
+            // ended: prune() takes it away when its week is over
+        } else if has("started") {
+            let d = Done { state: String::from(proto::ST_ERROR), exit: -1, error: String::from("the worker stopped while the job ran (restart, power cut); run it again"), time: now(), ..Done::default() };
+            bb_core::util::put_file(&plat::fs::join(&jd, "done.json"), j::pretty(&d.to_json()).as_bytes());
+        } else {
+            queue.push(spec);
+        }
+    }
+    queue.sort_by_key(|s| s.created);
+    queue
+}
+
+/// The folders of jobs that ended more than a week ago go, their logs with them (now and then
+/// while the worker runs: one that runs for months must not gather them for months).
+pub fn prune(dir: &str) {
+    let root = plat::fs::join(dir, "jobs");
+    for e in plat::fs::read_dir(&root).unwrap_or_default() {
+        let jd = plat::fs::join(&root, &e.name);
+        if let Some(m) = plat::fs::stat(&plat::fs::join(&jd, "done.json"))
+            && now() - m.mtime_ns.div_euclid(1_000_000_000) > 7 * 86_400
+        {
+            bb_core::util::remove_tree(&jd);
+        }
+    }
+}
+
+/// Send the ends of jobs their main machine has not heard of: `min_age` seconds after they
+/// were recorded (0 at a start; later long enough that the job's own attempt is over).
+pub fn resend_pending(w: &Worker, min_age: i64) {
     let root = plat::fs::join(&w.dir, "jobs");
     for e in plat::fs::read_dir(&root).unwrap_or_default() {
         let jd = plat::fs::join(&root, &e.name);
-        let done = plat::fs::join(&jd, "done.json");
-        if plat::file_exists(&done) == 1 {
-            let age = plat::fs::stat(&done).map_or(0, |m| now() - m.mtime_ns.div_euclid(1_000_000_000));
-            if age > 7 * 86_400 {
-                bb_core::util::remove_tree(&jd);
-            }
+        let done_path = plat::fs::join(&jd, "done.json");
+        if plat::file_exists(&plat::fs::join(&jd, "sent")) == 1 || plat::file_exists(&done_path) != 1 {
             continue;
         }
-        let Some(spec) = j::load::<JobSpec>(&plat::fs::join(&jd, "spec.json")) else {
-            bb_core::util::remove_tree(&jd);
+        let age = plat::fs::stat(&done_path).map_or(0, |m| now() - m.mtime_ns.div_euclid(1_000_000_000));
+        if age < min_age || w.sched.lock().running.iter().any(|r| r.spec.id == e.name) {
             continue;
-        };
-        let d = Done { state: String::from(proto::ST_ERROR), exit: -1, error: String::from("the worker stopped while the job ran (restart, power cut); run it again"), time: now(), ..Done::default() };
-        bb_core::util::put_file(&done, j::pretty(&d.to_json()).as_bytes());
-        Emitter::new(w, &spec.main, &spec.id).send(&Event::Done(d), 10);
+        }
+        let (Some(spec), Some(done)) = (j::load::<JobSpec>(&plat::fs::join(&jd, "spec.json")), j::load::<Done>(&done_path)) else { continue };
+        if w.stopping() || !Emitter::new(w, &spec.main, &spec.id).send(&Event::Done(done), 3) {
+            // the relay is away: the next round tries again
+            return;
+        }
+        bb_core::util::put_file(&plat::fs::join(&jd, "sent"), b"1");
+        plat::log_info("job", &format!("{}: its end reached the main machine now", spec.id));
     }
 }

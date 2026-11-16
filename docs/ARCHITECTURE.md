@@ -1,6 +1,6 @@
 # Architecture
 
-How the three programs fit together, what travels between them and how it is protected.
+How the programs fit together, what travels between them and how it is protected.
 The source files say the same in their head comments; this is the map.
 
 ## The parts
@@ -10,6 +10,11 @@ The source files say the same in their head comments; this is the map.
 | `bb` | the main machine | decides and submits: scans the project, uploads what is missing, seals a job for a worker, reads its events, fetches its outputs |
 | `bb-worker` | every machine that lends power | asks the relay for orders, syncs the project into a workspace, runs the command under the owner's limits, sends output and results |
 | `bb-relay` | one address all of them reach | admits devices, passes sealed messages on (channels), stores encrypted file content (blobs) |
+| `BuildBalancer` | any of the machines with a screen | the desktop app: a window around the same code. The worker's engine (`bb_worker::Engine`) runs inside it; the main machine's pages call what `bb` calls (`bb_main`) and work on the same files |
+
+`bb-worker` and `bb` are thin command lines over two libraries, `bb_worker` and `bb_main`;
+the app links both. Whatever holds a worker's data folder -- `bb-worker run`, its service or
+the app -- holds `worker.lock`, so there is one engine per folder.
 
 Every program only makes outgoing HTTPS connections to the relay. Nothing listens on a
 worker or on the main machine, so NAT, laptops on the road and firewalls are no obstacle.
@@ -109,6 +114,34 @@ file lets several `bb` processes follow one job without reading events twice.
 
 A worker need not be online when a job is sent: the order waits in its inbox.
 
+### What survives a restart
+
+A job's folder on the worker (`<worker data>/jobs/<job id>/`) says where the job stands:
+
+| File | Written | Means |
+| --- | --- | --- |
+| `spec.json` | when the worker accepts the job, before it is queued | the job is this worker's; an order delivered twice is recognised by it |
+| `started` | when the job gets its processors | from here on it cannot simply be run again |
+| `out.log` | while it runs | all of its output (the relay gets it in pieces, 32 MiB at most) |
+| `done.json` | at its end | the result |
+| `sent` | when the relay took the result | the main machine can read it |
+
+When a worker starts, jobs with only `spec.json` are queued again in their old order; a job
+with `started` and no `done.json` was interrupted and ends as `error`; a result without
+`sent` is sent again, then and every half minute, until the relay takes it. Folders of jobs
+that ended a week ago are removed.
+
+A job's output never holds the job up: the loop that watches the process (pipes, limits,
+cancel) hands pieces to a thread that sends them. When the relay is away the pieces queue up
+(256 of them), then count as "not sent" -- the worker's `out.log` has all of it, and the
+job's log on the main machine says how much is missing.
+
+On the main machine a job's record is written before its order is sent, and an event counts
+as read (the record's `after`) only when what it brought is on disk; the job's channel at
+the relay is deleted after the final record was written. The list of paired workers is
+changed under a lock file on the list as the file holds it, and a new worker is on it before
+it gets its welcome.
+
 ### States
 
 `submitted → queued → syncing → running → collecting → done | failed | cancelled | killed | error`
@@ -123,6 +156,16 @@ failed, worker restarted).
 wrote (size, time, chunk ids per file), `meta.json` its size and last use. Jobs of one
 project and slot never run at the same time. Only files a sync wrote are ever removed by a
 sync; a file a build changed is fetched again when the next Tree still has the old content.
+A sync never writes through a link: whatever lies on the way to a file and is not a real
+folder is removed first, and output patterns are not followed through links either.
+
+A workspace is a cache, so it may go at any time except while a job runs in it. Every way
+of removing one -- the app's button, `bb-worker clean` (a request file in `requests/` when a
+worker runs on the folder), the main machine's order `ws.remove`, the expiry after
+`keep_days` without use, making room for another project -- goes through one function of the
+engine that reserves the workspace first: it refuses while a job runs there, and no job
+starts there until the files are gone. With a project go the folders of its finished jobs.
+`bb-worker leave --purge` removes the pairing and everything else.
 
 ## The relay's interface
 
@@ -147,18 +190,23 @@ Plain JSON where the relay has to understand (devices), opaque bytes everywhere 
 
 Channels are files (`channels/*.ch`), blobs are files (`blobs/ab/<id>`); the relay keeps only
 indexes in memory, so a restart loses nothing. Blobs beyond `--store-limit` go, least
-recently used first; channels nobody touched for `--keep-days` go. A job whose blobs were
+recently used first; channels nobody touched for `--keep-days` go (the last access is kept
+in the channel's file, so a restart does not forget it). A job whose blobs were
 dropped fails with a message that says so, and sending the project again repairs it.
 
 ## Limits on a worker
 
 - **Processors.** `Cores` deals the lent processors out as bit masks; a job's process is
   started while the worker's own affinity is set to the job's mask (Windows: the process's,
-  Linux: the starting thread's), so the child and everything it starts inherit it.
+  Linux: the starting thread's), so the child and everything it starts inherit it. A job
+  waits for processors of its own rather than share them. macOS has no call for this: jobs
+  get the number as a hint there (`BB_CPUS` and the variables build tools read).
 - **Priority.** The same way: below-normal class (Windows) or nice 10 (Linux) around the
-  start of the job's process. The worker itself keeps normal priority -- it has to answer.
+  start of the job's process; on macOS the command is started through `/usr/bin/nice`. The
+  worker itself keeps normal priority -- it has to answer.
 - **Memory.** Each job's thread sums the resident memory of the job's process tree every two
-  seconds (Windows: a process snapshot and working sets; Linux: `/proc/<pid>/status`). The
+  seconds (Windows: a process snapshot and working sets; Linux: `/proc/<pid>/status`; macOS:
+  `proc_listallpids` and `proc_pidinfo`). The
   scheduler adds the jobs up and ends the one furthest above its reservation when the sum
   passes what is lent.
 - **Disk.** Workspace sizes are recorded after every job. A sync first makes room by removing
@@ -172,7 +220,11 @@ The programs are `#![no_std]` and use JFLib's crates for everything below them: 
 and client, TLS 1.3, X.509), `crypto` (X25519, XChaCha20-Poly1305, BLAKE3, Argon2id, HKDF),
 `compress` (LZ4, zstd), `base` (INI, glob), `agent_core` / `agent_io` (JSON, stdio framing).
 They depend on those crates directly at one exact version instead of the facade crate
-`jflib`, which would compile the whole GUI stack for three headless programs.
+`jflib`, which would compile the whole GUI stack for three headless programs. Only the
+desktop app adds `jflib-ui` (an immediate-mode UI that draws itself; no toolkit of the
+system is linked) and the style `jflib-style-netlab`. Its texts are German in the source
+and English through `gui/locales/ui.tsv`, the way JFLib's own apps do it.
 
 The one place with `unsafe` is `crates/bb_exec/src/sys.rs`: the handful of system calls for
-processor affinity, priority, free memory and the process list that `plat` has no use for.
+processor affinity, priority, free memory and the process list that `plat` has no use for
+(Windows: kernel32 and psapi, Linux: system calls and `/proc`, macOS: libSystem).

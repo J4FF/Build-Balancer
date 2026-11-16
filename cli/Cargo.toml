@@ -8,6 +8,13 @@ repository.workspace = true
 publish = false
 build = "build.rs"
 
+# the main machine's logic as a library: the Build Balancer app uses it too
+[lib]
+name = "bb_main"
+path = "src/lib.rs"
+test = false
+doctest = false
+
 [[bin]]
 name = "bb"
 path = "src/main.rs"

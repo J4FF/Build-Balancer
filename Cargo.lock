@@ -20,6 +20,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bb-gui"
+version = "0.1.0"
+dependencies = [
+ "bb",
+ "bb-worker",
+ "bb_core",
+ "jflib-base",
+ "jflib-build",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-style-netlab",
+ "jflib-ui",
+]
+
+[[package]]
 name = "bb-relay"
 version = "0.1.0"
 dependencies = [
@@ -86,6 +101,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitflags"
+version = "2.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "core_maths"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "font-types"
+version = "0.12.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "harfrust"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86aa776d6d32b072119e1f1650f4db843ff4382a4aaa6a2c9c4e35703cd377cb"
+dependencies = [
+ "bitflags",
+ "bytemuck",
+ "core_maths",
+ "read-fonts",
+ "smallvec",
+ "spin",
+]
+
+[[package]]
 name = "jflib-agent-core"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -137,6 +210,297 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4d5348d129c60583e700f8cd0f3a1593800088141095b398d9ca0746f94297"
 
 [[package]]
+name = "jflib-datetime"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4b71c6d19022d01ea4d456909e03153a78b86e3af78cf3776c9b8b245f744f6"
+
+[[package]]
+name = "jflib-gfx"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae2d5c70206e301dd56e7cf43dacf49067164d34c26e4627c237c6025e5663af"
+dependencies = [
+ "jflib-modrt",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-gpu"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54f483ce685bfff9b9e20336a5cc65b6cc902a4bcf9cbba2d46ffd2496b4718e"
+dependencies = [
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-shader",
+]
+
+[[package]]
+name = "jflib-img-all"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a085101c7de2e58c27e43083b1e8421208cfd313cc2c0f2230b36c3caa43d4"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-avif",
+ "jflib-img-bmp",
+ "jflib-img-core",
+ "jflib-img-dds",
+ "jflib-img-gif",
+ "jflib-img-heif",
+ "jflib-img-jpeg",
+ "jflib-img-jxl",
+ "jflib-img-jxr",
+ "jflib-img-pdn",
+ "jflib-img-png",
+ "jflib-img-tga",
+ "jflib-img-tiff",
+ "jflib-img-webp",
+ "jflib-rt",
+]
+
+[[package]]
+name = "jflib-img-av1"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a909764b646a145fa475fa80644683cdd6a0739c88b32d08eb137fa385123e9"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-avif"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88a5102fc7b030b56d119d1e284fcaa790b14157cd861ffc59e8de3dab638b01"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-av1",
+ "jflib-img-core",
+ "jflib-img-heif",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-bmp"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a7474838c098cf1051e8f18501a21dfc7632a0d01e2fade2fc689078ad6de5"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-img-jpeg",
+ "jflib-img-png",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-core"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1784c976d1c389410ba7539817c7f85dce95d1d0e8628b4663ea7fb4cbc607"
+dependencies = [
+ "jflib-gfx",
+ "jflib-modrt",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-dds"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ce5fcf5bd9c156f0ce73ef166c16fc846bc80cc45a9df78e8771a35ea84f60f"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-gif"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23fb21c76105072bfc52e107235bc3f7105adaa0dd5ca1ffabe659a2ec73c1a8"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-heif"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3823ab0cdf33e48caa919dac52c607b6532e32f514d4c4070df94e40fdeb9ef6"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-av1",
+ "jflib-img-core",
+ "jflib-img-hevc",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-hevc"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "371294965271ef988c868e7ce4fbb800b5f507abe9fea8f5cd32f4bcff81027f"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-jpeg"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31acfdaebc83642bfb2523735e192ed8159cb5e44258b7819f679149c3135e6"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-modrt",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-jxl"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "324502bb6fef92b5b8700f015bf68c188e40d9f32cd19e28660cccaf0ffeacf9"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-img-jpeg",
+ "jflib-modplat",
+ "jflib-modrt",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-jxr"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c71a977f7fee197ba3ed7b874b483c78d0044f1fe53a28a68baacc98d66468b0"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-pdn"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "064f83833c97728f9d1fe1fb54f81e288b13c09575564e592f94d04946af55b3"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-img-png",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-png"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd9974070f53e87bfcc00bba4e4ff35154468492134842953b6f2d19f283e07"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-svg"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30bc6d64783bad24620056d659008601cc2ce08f8824569a35e0ffd04474a35e"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-rt",
+]
+
+[[package]]
+name = "jflib-img-tga"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b62e449a38a1c4be51c24d25480217f1008be1ec122b5a045e966b4426bcba1"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-tiff"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9fc68ca3f94aeffd845e95a18d4141c560b76f3361aa7f635213c762c05bbda"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-img-jpeg",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-img-webp"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b065dd2f5bd0665a06116e857ec64e5806f05dbaa2a5ad7de757c3387d99b8a"
+dependencies = [
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-rt",
+ "jflib-simd",
+]
+
+[[package]]
+name = "jflib-modplat"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4c38d66fe3281b5eed686bf876a58d51bf5ada156d4f4832fdaf2d71b0ab247"
+dependencies = [
+ "jflib-modrt",
+]
+
+[[package]]
+name = "jflib-modrt"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4c5a5225bd6c7cefe89396335e891d53fbeca554377624d640cc3dc15348eb"
+
+[[package]]
 name = "jflib-netio"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -164,3 +528,234 @@ name = "jflib-rt"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72ab83f3f103d920fe7ebcb3579618911af363952d2b0a18492bb43409de3488"
+
+[[package]]
+name = "jflib-shader"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d597722268146c68e52b20f36806c91c866be88954c545306c2b25d2b7596ac"
+
+[[package]]
+name = "jflib-simd"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f087729e511c085b1010bc06b335c1ad0c940bbffae6a97677d03c2d93b338"
+dependencies = [
+ "jflib-modrt",
+ "jflib-rt",
+]
+
+[[package]]
+name = "jflib-spell"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aff82beaee9ee5ffc3998acf87ad410810894c65d055443331b8c11d492d500d"
+dependencies = [
+ "jflib-plat",
+ "jflib-rt",
+]
+
+[[package]]
+name = "jflib-style-netlab"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc99aef755a9311921dd11acf538a068c005c5abef819f1bee28fad8074136e0"
+dependencies = [
+ "jflib-text",
+ "jflib-ui",
+]
+
+[[package]]
+name = "jflib-text"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a51d3c44a9be2fa312e07018a4af0b2bd31425cde7906084828bd590787fcc5"
+dependencies = [
+ "jflib-base",
+ "jflib-gfx",
+ "jflib-img-core",
+ "jflib-img-png",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-simd",
+ "jflib-text-shape",
+]
+
+[[package]]
+name = "jflib-text-shape"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a238fe966f07fd24df6b6fa881ba9ceaf19e83d17dc1e024be99cb557c9ccff0"
+dependencies = [
+ "harfrust",
+ "unicode-bidi",
+ "unicode-script",
+]
+
+[[package]]
+name = "jflib-ui"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e7510b30c2522779dc8c969716594e37691032e67bedc61ea38542a07bf27c0"
+dependencies = [
+ "jflib-agent-core",
+ "jflib-agent-io",
+ "jflib-base",
+ "jflib-datetime",
+ "jflib-gfx",
+ "jflib-gpu",
+ "jflib-img-all",
+ "jflib-img-core",
+ "jflib-img-png",
+ "jflib-img-svg",
+ "jflib-plat",
+ "jflib-rt",
+ "jflib-shader",
+ "jflib-spell",
+ "jflib-text",
+]
+
+[[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "proc-macro2"
+version = "1.0.107"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "quote"
+version = "1.0.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "read-fonts"
+version = "0.45.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4edc8db0d972de88e53a085b1f01fb3fbdae7bb0cb7a0ce2b2f8285a412fe3ef"
+dependencies = [
+ "bytemuck",
+ "core_maths",
+ "font-types",
+ "once_cell",
+ "yoke",
+]
+
+[[package]]
+name = "smallvec"
+version = "1.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
+
+[[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "syn"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "synstructure"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "unicode-bidi"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+
+[[package]]
+name = "unicode-ident"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unicode-script"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
+
+[[package]]
+name = "yoke"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417ef3fcf6c300b7dbd25c85531a746931c02ad536f3cf4786ed1e88223340b3"
+dependencies = [
+ "stable_deref_trait",
+ "yoke-derive",
+ "zerofrom",
+]
+
+[[package]]
+name = "yoke-derive"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
+name = "zerofrom"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
+dependencies = [
+ "zerofrom-derive",
+]
+
+[[package]]
+name = "zerofrom-derive"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+]

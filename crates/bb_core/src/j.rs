@@ -34,7 +34,9 @@ pub fn load<T: Json>(path: &str) -> Option<T> {
 
 /// a record written to a file only its owner can read, replaced in one step
 pub fn save<T: Json>(path: &str, v: &T) -> bool {
-    plat::fs::write_file_private(path, pretty(&v.to_json()).as_bytes())
+    // a record beyond the limits has no text: the file as it is stays rather than an empty one
+    let text = pretty(&v.to_json());
+    !text.is_empty() && plat::fs::write_file_private(path, text.as_bytes())
 }
 
 /// a string value

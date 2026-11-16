@@ -172,7 +172,15 @@ impl Store {
                     }
                 }
             }
-            ch.touched = now();
+            // The last access outlives a restart: now and then it is written into the time of
+            // the channel's first record (the one with its name), which loading reads back.
+            let t = now();
+            if t - ch.touched > 3600
+                && let Some(f) = plat::File::open(&ch.file, plat::FO_RW)
+            {
+                let _ = f.write_at(8, &t.to_le_bytes());
+            }
+            ch.touched = t;
         }
         if name.ends_with("/in") && from > 64 && from * 2 > ch.index.len() {
             compact(ch, name, from);

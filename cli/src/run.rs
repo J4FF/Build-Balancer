@@ -191,6 +191,12 @@ fn detached(ctx: &Ctx, recs: &[JobRec]) -> Reply {
     Reply::ok(text, json)
 }
 
+/// Whether `bb run`'s own options ask for JSON.  What follows the first word of the command
+/// belongs to the command: `bb run cargo metadata --json` is not a request to bb.
+pub fn run_wants_json(args: &[String]) -> bool {
+    parse(args, RUN_VALUED, RUN_FLAGS, RUN_SHORT, true).is_ok_and(|c| c.flag("--json"))
+}
+
 pub fn run(args: &[String], json: bool) -> CmdResult {
     let cli = parse(args, RUN_VALUED, RUN_FLAGS, RUN_SHORT, true)?;
     let ctx = ctx(&cli)?;
@@ -447,13 +453,20 @@ pub fn forget(args: &[String]) -> CmdResult {
 }
 
 pub fn clean(args: &[String]) -> CmdResult {
-    let cli = parse(args, &["--worker", "--slot"], &[], RUN_SHORT, false)?;
+    let cli = parse(args, &["--worker", "--slot"], &["--all"], RUN_SHORT, false)?;
     let ctx = ctx(&cli)?;
     let project = Project::find(&plat::cwd()).ok_or_else(|| format!("no {} here or above", conf::PROJECT_FILE))?;
-    let w = ctx.worker(cli.value("--worker").ok_or("bb clean -w WORKER [--slot NAME]")?)?;
-    let key = ctx.pair_key(w).ok_or("the worker's key is damaged")?;
-    let inbox = proto::inbox(&w.id);
-    let order = proto::order(proto::ORDER_WS_REMOVE, j::obj([("project_id", j::s(&project.id)), ("slot", j::s(cli.value("--slot").unwrap_or("")))]));
-    ctx.relay.ch_append(&inbox, &bb_core::crypt::seal(&key, &bb_core::crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes()))?;
-    Ok(Reply::ok(format!("asked {} to remove its workspace of \"{}\"; the next job there starts from a fresh copy\n", w.name, project.name), j::obj([("ok", Value::Bool(true))])))
+    let workers: Vec<&conf::PairedWorker> = match (cli.value("--worker"), cli.flag("--all")) {
+        (Some(w), _) => alloc::vec![ctx.worker(w)?],
+        (None, true) => ctx.workers.iter().collect(),
+        (None, false) => return Err(String::from("bb clean -w WORKER [--slot NAME]   or   bb clean --all   (every worker)")),
+    };
+    for w in &workers {
+        crate::ops::clean(&ctx, w, &project.id, cli.value("--slot").unwrap_or(""))?;
+    }
+    let names: Vec<&str> = workers.iter().map(|w| w.name.as_str()).collect();
+    Ok(Reply::ok(
+        format!("asked {} to remove everything of \"{}\" (its files and its jobs' folders); a worker that is offline does it when it is back, and the next job there starts from a fresh copy\n", names.join(", "), project.name),
+        j::obj([("ok", Value::Bool(true)), ("workers", j::strs(&names))]),
+    ))
 }

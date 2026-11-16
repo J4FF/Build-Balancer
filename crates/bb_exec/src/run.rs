@@ -124,9 +124,18 @@ fn spawn_error(code: u32, program: &str) -> String {
 }
 
 pub fn spawn(spec: &Spec) -> Result<Proc, String> {
-    let args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
+    let mut args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
     let env: Vec<(&str, Option<&str>)> = spec.env.iter().map(|(k, v)| (k.as_str(), v.as_deref())).collect();
-    let cmd = Command { program: &spec.program, args: &args, cwd: Some(&spec.cwd), env: &env };
+    let mut program = spec.program.as_str();
+    // macOS: a process cannot lower the priority of what it starts and keep its own, so the
+    // job starts through nice (sys.rs)
+    if cfg!(target_os = "macos") && spec.low_priority {
+        let mut niced = alloc::vec!["-n", "10", program];
+        niced.append(&mut args);
+        args = niced;
+        program = "/usr/bin/nice";
+    }
+    let cmd = Command { program, args: &args, cwd: Some(&spec.cwd), env: &env };
     let guard = SPAWN.lock();
     let before = sys::children();
     let old = sys::affinity();

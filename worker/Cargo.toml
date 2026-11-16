@@ -8,6 +8,13 @@ repository.workspace = true
 publish = false
 build = "build.rs"
 
+# the engine as a library: the Build Balancer app runs it inside its window
+[lib]
+name = "bb_worker"
+path = "src/lib.rs"
+test = false
+doctest = false
+
 [[bin]]
 name = "bb-worker"
 path = "src/main.rs"

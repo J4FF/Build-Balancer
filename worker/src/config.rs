@@ -45,6 +45,8 @@ record! {
         pub tags: Vec<String>,
         /// more programs to look for besides the usual build tools
         pub tools: Vec<String>,
+        /// a project's files go by themselves when no job used them for this many days (0: never)
+        pub keep_days: u32,
     }
 }
 
@@ -57,6 +59,10 @@ record! {
 }
 
 pub fn default_dir() -> String {
+    // run by root (a service): a place of the system's, not root's home
+    if cfg!(target_os = "macos") && plat::process::elevated() {
+        return String::from("/Library/Application Support/BuildBalancer/worker");
+    }
     if !cfg!(windows) && plat::process::elevated() {
         return String::from("/var/lib/buildbalancer/worker");
     }
@@ -117,12 +123,16 @@ pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, Strin
         c.ram = n.clamp(256 << 20, total.max(256 << 20));
     }
     if let Some(v) = cli.value("--disk") {
-        let free = plat::fs::free_space(dir).map_or(0, |f| f.0);
+        // the data folder may not exist yet: its parent lies on the same volume
+        let free = plat::fs::free_space(dir).or_else(|| plat::fs::free_space(plat::fs::parent(dir))).map_or(0, |f| f.0);
         let n = bb_core::util::share_parse(v, free, bb_core::util::size_parse).ok_or("--disk takes a size like 40G or a share of the free space like 50%")?;
         c.disk = n.max(256 << 20);
     }
     if let Some(v) = cli.value("--jobs") {
         c.jobs = v.parse::<u32>().ok().filter(|n| (1..=64).contains(n)).ok_or("--jobs takes a number from 1 to 64")?;
+    }
+    if let Some(v) = cli.value("--keep-days") {
+        c.keep_days = v.parse::<u32>().ok().filter(|n| *n <= 3650).ok_or("--keep-days takes a number of days (0: keep projects until they are removed by hand)")?;
     }
     if let Some(v) = cli.value("--priority") {
         if v != "low" && v != "normal" {
@@ -148,7 +158,7 @@ pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, Strin
 
 pub fn offer_text(c: &Config) -> String {
     format!(
-        "  processors   {} of {}\n  memory       {} of {}\n  disk         {}\n  jobs at once {}\n  priority     {}\n  tags         {}\n",
+        "  processors   {} of {}\n  memory       {} of {}\n  disk         {}\n  jobs at once {}\n  priority     {}\n  tidy up      {}\n  tags         {}\n",
         c.cpu,
         plat::cpu_count(),
         bb_core::util::size_text(c.ram),
@@ -156,6 +166,7 @@ pub fn offer_text(c: &Config) -> String {
         bb_core::util::size_text(c.disk),
         c.jobs,
         c.priority,
+        if c.keep_days == 0 { String::from("never by itself") } else { format!("projects unused for {} days are removed", c.keep_days) },
         if c.tags.is_empty() { String::from("-") } else { c.tags.join(", ") }
     )
 }

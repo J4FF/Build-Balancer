@@ -130,9 +130,32 @@ impl Ctx {
         Ok(Ctx { dir: String::from(dir), main, keys, data, relay, workers })
     }
 
-    pub fn save_workers(&self) -> Result<(), String> {
-        let f = WorkersFile { workers: self.workers.clone() };
-        if bb_core::j::save(&plat::fs::join(&self.dir, "workers.json"), &f) { Ok(()) } else { Err(format!("{} cannot be written", plat::fs::join(&self.dir, "workers.json"))) }
+    /// Change the list of paired workers.  Another bb or the app may have changed it since this
+    /// one read it, so `change` works on the list as the file holds it now, under a lock, and
+    /// only a list that was written counts.
+    pub fn update_workers(&mut self, change: &mut dyn FnMut(&mut Vec<PairedWorker>)) -> Result<(), String> {
+        let path = plat::fs::join(&self.dir, "workers.json");
+        let lock_path = plat::fs::join(&self.dir, "workers.lock");
+        let mut lock = plat::FileLock::acquire(&lock_path);
+        for _ in 0..100 {
+            if lock.is_some() {
+                break;
+            }
+            plat::sleep_ms(50);
+            lock = plat::FileLock::acquire(&lock_path);
+        }
+        let _lock = lock.ok_or_else(|| format!("{} is held by another program for too long", lock_path))?;
+        let mut list = match plat::file_exists(&path) {
+            0 => Vec::new(),
+            // a list that cannot be read is not replaced by an empty one
+            _ => bb_core::j::load::<WorkersFile>(&path).ok_or_else(|| format!("{} cannot be read; repair or remove it", path))?.workers,
+        };
+        change(&mut list);
+        if !bb_core::j::save(&path, &WorkersFile { workers: list.clone() }) {
+            return Err(format!("{} cannot be written", path));
+        }
+        self.workers = list;
+        Ok(())
     }
 
     /// the key shared with a worker
