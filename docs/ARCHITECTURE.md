@@ -114,7 +114,10 @@ sends a worker:
    and from then on the update counts. If one of the four cannot be put in place, the others
    go back. An update that was cut short -- the power, a kill -- leaves its journal, and
    the next program that starts takes all of it back: two new programs beside two old ones
-   are worse than four old ones. The same start clears away what a finished update left (on
+   are worse than four old ones. Where a program cannot be put back just then (it is in
+   use), the journal and the old files stay -- they are all there is to go back to --, the
+   program that starts says so, and no new update is laid on top until a later start has
+   taken everything back. The same start clears away what a finished update left (on
    Windows the replaced files, once the programs that ran from them have ended); while an
    update is at work in the folder, that tidying keeps its hands off.
 4. **Start again**, so the new version runs: the app starts the program that is in its

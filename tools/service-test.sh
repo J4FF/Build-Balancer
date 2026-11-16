@@ -113,8 +113,13 @@ cd "$work" || exit 1
 
 # --- an update never stops the service: the worker sees that another file took its program's
 # place (here a copy of itself), ends with an error once no job runs, and systemd starts it
-starts() { grep -c "version .* started" "$own/worker/logs/worker.log" 2>/dev/null; }
-started_again() { [ "$(starts)" -ge 2 ] && echo yes; }
+starts() {
+    n=$(grep -c "version .* started" "$own/worker/logs/worker.log" 2>/dev/null)
+    echo "${n:-0}"
+}
+# (counted from here: a start before this one says nothing about the replacing)
+before=$(starts)
+started_again() { [ "$(starts)" -gt "$before" ] && echo yes; }
 cp "$bin/bb-worker" "$bin/bb-worker.next" && mv "$bin/bb-worker.next" "$bin/bb-worker"
 check "the worker's service starts again by itself when its program is replaced" yes "$(wait_for 60 started_again)"
 wait_for 40 online >/dev/null

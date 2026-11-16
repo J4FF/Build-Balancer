@@ -126,6 +126,45 @@ for p in bb bb-worker bb-relay BuildBalancer; do printf '%s\t%s\n' "$p$ext" "$p$
 check "an update that was cut short is taken back by the next program that starts" same "$(cmp -s "$inst/bb-relay$ext" "$work/pack/bb-relay$ext" && echo same)"
 check "... and leaves nothing behind" 0 "$(left)"
 
+# --- ... and while a program cannot be put back, what the update kept stays: nothing of it is
+# cleared away and no new update is laid on top, until a later start can take it back.  (What
+# stands in the way here: on Windows a file that another program holds open, elsewhere a
+# folder under the program's name.)
+note_half_update() {
+    for p in bb bb-worker bb-relay BuildBalancer; do printf '%s\t%s\n' "$p$ext" "$p$ext.old"; done >"$inst/.buildbalancer-update.journal"
+}
+cp "$inst/bb-relay$ext" "$inst/bb-relay$ext.old"
+if [ "$win" = 1 ]; then
+    echo "half an update" >"$inst/bb-relay$ext"
+    "$py" -c 'import os, sys, time
+held = open(sys.argv[1], "rb")
+open(sys.argv[2], "w").close()
+end = time.time() + 600
+while not os.path.exists(sys.argv[3]) and time.time() < end:
+    time.sleep(0.1)' "$inst/bb-relay$ext" "$work/held" "$work/let-go" &
+    holder=$!
+    is_held() { [ -f "$work/held" ] && echo yes; }
+    wait_for 60 is_held >/dev/null || die "the test could not hold a file open" /dev/null
+else
+    rm -f "$inst/bb-relay" && mkdir "$inst/bb-relay" && : >"$inst/bb-relay/in-the-way"
+fi
+note_half_update
+"$bb" --version >"$work/stuck.out" 2>&1
+check "an update that cannot be taken back yet says so" 1 "$(grep -c "is not taken back yet" "$work/stuck.out")"
+check "... and keeps what it kept" 2 "$(ls -a "$inst" | grep -c "^bb-relay$ext\.old\$\|update\.journal\$")"
+"$bb" update >"$work/stuck-update.out" 2>&1
+check "... and no new update is laid on top of it" 1 "$(grep -c "close the Build Balancer programs" "$work/stuck-update.out")"
+check "... which keeps it still" 2 "$(ls -a "$inst" | grep -c "^bb-relay$ext\.old\$\|update\.journal\$")"
+if [ "$win" = 1 ]; then
+    : >"$work/let-go"
+    wait "$holder" 2>/dev/null
+else
+    rm -rf "$inst/bb-relay"
+fi
+"$bb" --version >/dev/null 2>&1
+check "... until a later start can: then all is as it was" same "$(cmp -s "$inst/bb-relay$ext" "$work/pack/bb-relay$ext" && echo same)"
+check "... and nothing is left behind" 0 "$(left)"
+
 # --- a worker that runs: the main machine asks it to update, and it starts again by itself
 "$inst/bb-relay$ext" --listen "127.0.0.1:$port" --data "$work/relay" >"$work/relay.out" 2>&1 &
 setup_key() { grep "bb setup" "$work/relay.out" 2>/dev/null | head -1 | awk '{print $4}'; }

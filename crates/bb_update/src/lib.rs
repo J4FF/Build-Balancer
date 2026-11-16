@@ -319,13 +319,18 @@ fn journal(dir: &str) -> Option<Vec<(String, String)>> {
     )
 }
 
-/// Take back an update that did not get through: every program it names as it was before.
-fn roll_back(dir: &str, plan: &[(String, String)]) {
+/// Take back an update that did not get through: every program it names as it was before
+/// -> the programs that could not be put back (none: all is as it was).  What it kept of
+/// those stays where it is -- it is all there is to go back to.
+fn roll_back(dir: &str, plan: &[(String, String)]) -> Vec<String> {
+    let mut left = Vec::new();
     for (file, old) in plan {
         let target = plat::fs::join(dir, file);
         if old.is_empty() {
             // there was no such program before: none stays
-            plat::delete(&target);
+            if plat::file_exists(&target) != 0 && !plat::delete(&target) {
+                left.push(file.clone());
+            }
             continue;
         }
         let kept = plat::fs::join(dir, old);
@@ -340,12 +345,17 @@ fn roll_back(dir: &str, plan: &[(String, String)]) {
             plat::rename(&target, &aside(dir, file));
             back = plat::rename(&kept, &target);
         }
+        if !back {
+            left.push(file.clone());
+            continue;
+        }
         // Elsewhere the two can be names of one file (the update had not put the new one
         // there yet), and renaming the one onto the other leaves both.
-        if back && !cfg!(windows) {
+        if !cfg!(windows) {
             plat::delete(&kept);
         }
     }
+    left
 }
 
 /// what an update left in a folder: (program file, the programs kept from before, a new one not yet in place)
@@ -373,12 +383,22 @@ pub fn tidy(dir: &str) {
     }
     // (a folder this user may not write to: there is nothing to do here either way)
     let Some(_lock) = lock(dir) else { return };
-    // (looked at again, now that no update can be in the middle of it)
+    if let Err(why) = tidy_locked(dir) {
+        plat::log_warn("update", &format!("an update of the programs in {} was cut short and is not taken back yet ({}): the next start of a program tries again", dir, why));
+    }
+}
+
+/// tidy() under the folder's lock, where no update can be in the middle of anything -> Err(why
+/// an update that was cut short is not taken back yet).  Then nothing was cleared away: its
+/// note and the old programs it kept stay until all of it could be taken back.
+fn tidy_locked(dir: &str) -> Result<(), String> {
     if plat::file_exists(&journal_path(dir)) != 0 {
-        // One that cannot be read is another user's: theirs to take back, and until then
-        // nothing here is touched -- the old programs it kept are all there is to go back to.
-        let Some(plan) = journal(dir) else { return };
-        roll_back(dir, &plan);
+        // one that cannot be read is another user's, and theirs to take back
+        let Some(plan) = journal(dir) else { return Err(String::from("what it was about to do was written down by another user")) };
+        let left = roll_back(dir, &plan);
+        if !left.is_empty() {
+            return Err(format!("{} cannot be replaced right now", left.join(", ")));
+        }
     }
     for (file, mut old, new) in leftovers(dir) {
         let target = plat::fs::join(dir, &file);
@@ -393,6 +413,7 @@ pub fn tidy(dir: &str) {
         }
     }
     plat::delete(&journal_path(dir));
+    Ok(())
 }
 
 /// Put the programs of release `version` into `dir` -> the programs that were put there.
@@ -453,7 +474,6 @@ fn put(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
             if cfg!(windows) { "in a terminal started with \"Run as administrator\"" } else { "with sudo" }
         )
     };
-    tidy(dir);
     let Some(_lock) = lock(dir) else {
         // No lock: another update works here right now -- or the folder, or the lock's file
         // in it, is not this user's to write to, which says nothing about another update.
@@ -465,7 +485,16 @@ fn put(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
         let foreign = !cfg!(windows) && plat::File::open(&lock_path(dir), plat::FO_RW).is_none();
         return Err(if writable && !foreign { format!("another update is at work in {}: try again in a moment", dir) } else { denied("the programs") });
     };
-    let result = replace(dir, programs).map_err(|file| denied(&file));
+    // What an update before this one left goes first -- and one that was cut short is taken
+    // back first: a new one on top of it would bury the old programs it kept.
+    if let Err(why) = tidy_locked(dir) {
+        return Err(format!("an update that was cut short in {} is not taken back yet ({}): close the Build Balancer programs that run from there, then try again", dir, why));
+    }
+    let result = replace(dir, programs).map_err(|file| {
+        // (its note is still there: not everything could be put back)
+        let unsettled = if plat::file_exists(&journal_path(dir)) != 0 { " -- and not every program of before could be put back yet: the next start of a program tries again" } else { "" };
+        format!("{}{}", denied(&file), unsettled)
+    });
     // what is left over now is this update's own: new files that did not get into place
     for (file, _) in programs {
         plat::delete(&fresh(dir, file));
@@ -507,8 +536,11 @@ fn replace(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
             plat::fs::hard_link(&target, &kept_as) || plat::read_file(&target).is_some_and(|b| plat::write_file(&kept_as, &b) && plat::fs::set_mode(&kept_as, 0o755))
         };
         if !kept || !plat::rename(&new, &target) {
-            roll_back(dir, &plan);
-            plat::delete(&journal_path(dir));
+            // (what cannot be put back now stays on record -- the note, the old programs --
+            // and the next program that starts tries again)
+            if roll_back(dir, &plan).is_empty() {
+                plat::delete(&journal_path(dir));
+            }
             return Err(file.clone());
         }
     }

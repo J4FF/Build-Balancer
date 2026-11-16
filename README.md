@@ -460,7 +460,8 @@ main machine and worker on the one runner:
   and starts again by itself, `bb-worker update` with a worker running, a job that runs
   when the update is asked for (it runs to its end, one that arrives meanwhile runs after
   the restart), a worker whose programs someone else's update replaced, an update that was
-  cut short, a download that does not match its checksum.
+  cut short (it is taken back at the next start; where a program is in the way, what it
+  kept stays until it can be), a download that does not match its checksum.
 - The desktop app, `gui/tests/demo.uis`: every page, the one-click removal, a pairing --
   without a display.
 - Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started
