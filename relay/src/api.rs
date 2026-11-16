@@ -117,20 +117,28 @@ fn claim(store: &Store, req: &Request) -> Response {
     if !bb_core::util::id_ok(id) || name.is_empty() || name.len() > 100 {
         return error(400, "bad_request", "id and name are needed");
     }
-    // read at every claim: `bb-relay setup-key` writes a new one while the relay runs
+    // The key is read, checked and used up under the admission lock: two requests with the same
+    // key cannot both pass.  Read at every claim: `bb-relay setup-key` writes a new one while the
+    // relay runs.
+    let mut st = store.st.lock();
     let hash_file = store.path("setup.hash");
     let want = plat::read_file(&hash_file).map(|b| String::from(String::from_utf8_lossy(&b).trim())).unwrap_or_default();
     if want.is_empty() || !crypto::ct_eq(want.as_bytes(), bb_core::crypt::token_hash(setup).as_bytes()) {
         return error(403, "setup_key", "this setup key is not valid (used already, or of another relay); `bb-relay setup-key` on the server makes a new one");
     }
+    if !plat::delete(&hash_file) {
+        return error(500, "storage", "the relay cannot use up its setup key (its data folder is not writable)");
+    }
     let token = bb_core::crypt::token_new();
-    let mut st = store.st.lock();
+    let before = st.file.devices.clone();
     st.file.devices.retain(|d| d.id != id);
     st.file.devices.push(Device { id: String::from(id), name: String::from(name), role: String::from(ROLE_MAIN), token_hash: bb_core::crypt::token_hash(&token), added: now(), ..Device::default() });
     if !store.save(&st) {
+        // nothing was admitted: the key counts again
+        st.file.devices = before;
+        bb_core::util::put_file(&hash_file, want.as_bytes());
         return error(500, "storage", "the relay cannot write its data folder");
     }
-    plat::delete(&hash_file);
     plat::log_info("relay", &format!("main machine {} ({}) took this relay", name, id));
     Response::json(200, &j::obj([("token", j::s(&token))]))
 }
@@ -179,10 +187,15 @@ fn device_remove(store: &Store, req: &Request, id: &str) -> Response {
         return error(409, "self", "a main machine does not remove itself");
     }
     let mut st = store.st.lock();
-    let before = st.file.devices.len();
+    let before = st.file.devices.clone();
     st.file.devices.retain(|d| d.id != id);
-    if st.file.devices.len() == before {
+    if st.file.devices.len() == before.len() {
         return error(404, "not_found", "no such device");
+    }
+    // saved first: a removal that cannot be written did not happen, and can be asked for again
+    if !store.save(&st) {
+        st.file.devices = before;
+        return error(500, "storage", "the relay cannot write its data folder");
     }
     st.status.remove(id);
     st.seen.remove(id);
@@ -192,7 +205,7 @@ fn device_remove(store: &Store, req: &Request, id: &str) -> Response {
         store.remove_channel(&mut st, &n);
     }
     plat::log_info("relay", &format!("device {} removed", id));
-    if store.save(&st) { ok() } else { error(500, "storage", "the relay cannot write its data folder") }
+    ok()
 }
 
 fn slot_ok(slot: &str) -> bool {
@@ -400,18 +413,21 @@ fn blobs_put(store: &Store, req: &Request) -> Response {
         items.push((id, &b[p..p + len]));
         p += len;
     }
+    // One blob at a time, each under the store's lock from the look to the note: a blob that is
+    // there keeps its file and its recorded size (the same id cannot be given another length),
+    // and none is dropped between being written and being noted.
     for (id, data) in &items {
-        if store.st.lock().blobs.contains_key(id) {
+        let mut st = store.st.lock();
+        if let Some(b) = st.blobs.get_mut(id) {
+            b.1 = now();
             continue;
         }
         if !bb_core::util::put_file(&store.blob_path(id), data) {
             return error(507, "storage", "the relay cannot store the blob (disk full?)");
         }
-    }
-    let mut st = store.st.lock();
-    for (id, data) in &items {
         store.blob_note(&mut st, *id, data.len() as u32);
     }
+    let mut st = store.st.lock();
     let gone = store.evict(&mut st);
     if gone > 0 {
         plat::log_info("relay", &format!("store over its limit: {} blobs unused the longest dropped", gone));
@@ -423,7 +439,10 @@ fn blobs_get(store: &Store, req: &Request) -> Response {
     if let Err(r) = auth(store, req) {
         return r;
     }
-    let Some(ids) = ids_of(&req.body) else { return error(400, "bad_request", "ids of 32 bytes each, 8192 at most") };
+    let Some(mut ids) = ids_of(&req.body) else { return error(400, "bad_request", "ids of 32 bytes each, 8192 at most") };
+    // each blob once, however often it was named: the answer's size is what the sizes add up to
+    let mut once = alloc::collections::BTreeSet::new();
+    ids.retain(|id| once.insert(*id));
     let t = now();
     let known: Vec<Option<u32>> = {
         let mut st = store.st.lock();

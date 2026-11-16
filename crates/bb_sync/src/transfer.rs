@@ -258,7 +258,11 @@ pub fn apply(relay: &Relay, key: &DataKey, root: &str, tree: &Tree, known: &mut 
         let gone: Vec<String> = known.files.keys().filter(|p| !now.contains(p.as_str())).cloned().collect();
         for p in gone {
             let abs = bb_core::util::below(root, &p);
-            if plat::fs::lstat(&abs).is_some_and(|m| m.is_file()) && plat::delete(&abs) {
+            if plat::fs::lstat(&abs).is_some_and(|m| m.is_file()) {
+                if !plat::delete(&abs) {
+                    // in use right now: it stays remembered, the next sync tries again
+                    continue;
+                }
                 stats.removed += 1;
             }
             known.files.remove(&p);
@@ -322,6 +326,11 @@ pub fn apply(relay: &Relay, key: &DataKey, root: &str, tree: &Tree, known: &mut 
             let ids: Vec<[u8; 32]> = at.keys().copied().collect();
             fetch(relay, key, &ids, &mut |id, plain| {
                 for off in at.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+                    // every chunk but the last is full, the last holds the rest: a tree that
+                    // says otherwise would write beyond the file's size
+                    if plain.len() as u64 != chunk_len(e.size, (*off / CHUNK as u64) as usize) {
+                        return Err(format!("{}: the tree names a chunk of another size", e.path));
+                    }
                     if out.write_at(*off, &plain) != Some(plain.len()) {
                         return Err(format!("{} cannot be written (disk full?)", abs));
                     }
@@ -347,12 +356,12 @@ pub fn apply(relay: &Relay, key: &DataKey, root: &str, tree: &Tree, known: &mut 
 
 fn write_whole(root: &str, e: &Entry, data: &[u8], known: &mut Known, stats: &mut ApplyStats) -> Result<(), String> {
     let abs = bb_core::util::below(root, &e.path);
+    // Before the write, not after a failed one: whatever of the wrong kind lies on the way goes
+    // (a folder where a file belongs, a file where a folder belongs).  A link to a folder
+    // would not fail at all -- the file would land wherever the link leads, outside the tree.
+    clear_way(root, &e.path, false);
     if !bb_core::util::put_file(&abs, data) {
-        // something of the wrong kind is in the way (a folder where a file belongs, or the other way round)
-        clear_way(root, &e.path, false);
-        if !bb_core::util::put_file(&abs, data) {
-            return Err(format!("{} cannot be written (disk full, or the file is in use)", abs));
-        }
+        return Err(format!("{} cannot be written (disk full, or the file is in use)", abs));
     }
     finish_file(&abs, e, known);
     stats.written += 1;

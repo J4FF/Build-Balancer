@@ -37,7 +37,13 @@ use plat::net::{IpAddr, SocketAddr, TcpStream};
 
 use crate::store::Store;
 
-const SERVICE: &str = if cfg!(windows) { "BuildBalancerRelay" } else { "buildbalancer-relay" };
+const SERVICE: &str = if cfg!(windows) {
+    "BuildBalancerRelay"
+} else if cfg!(target_os = "macos") {
+    "org.buildbalancer.relay"
+} else {
+    "buildbalancer-relay"
+};
 const VALUED: &[&str] = &["--listen", "--public", "--data", "--store-limit", "--keep-days", "--threads"];
 
 fn fail(s: &str) -> i32 {
@@ -59,6 +65,10 @@ fn usage() -> i32 {
 }
 
 fn default_dir() -> String {
+    // run by root (a service): a place of the system's, not root's home
+    if cfg!(target_os = "macos") && plat::process::elevated() {
+        return String::from("/Library/Application Support/BuildBalancer/relay");
+    }
     if !cfg!(windows) && plat::process::elevated() {
         return String::from("/var/lib/buildbalancer/relay");
     }

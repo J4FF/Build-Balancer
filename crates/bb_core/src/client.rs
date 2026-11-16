@@ -291,11 +291,13 @@ impl Relay {
             return Ok(());
         }
         let b = self.call("POST", "/v1/blobs/get", false, ids.as_flattened())?;
+        let mut answered: alloc::collections::BTreeSet<[u8; 32]> = alloc::collections::BTreeSet::new();
         let mut p = 0;
         while p + 36 <= b.len() {
             let id: [u8; 32] = b[p..p + 32].try_into().unwrap_or([0; 32]);
             let len = u32::from_le_bytes(b[p + 32..p + 36].try_into().unwrap_or([0; 4]));
             p += 36;
+            answered.insert(id);
             if len == u32::MAX {
                 on(&id, None);
                 continue;
@@ -306,6 +308,10 @@ impl Relay {
             }
             on(&id, Some(&b[p..p + len]));
             p += len;
+        }
+        // an answer that leaves an id out, or ends in half a record, is no answer
+        if p != b.len() || ids.iter().any(|id| !answered.contains(id)) {
+            return fail(0, "a blob answer does not hold every blob that was asked for");
         }
         Ok(())
     }

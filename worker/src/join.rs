@@ -18,39 +18,39 @@ use bb_core::client::Relay;
 use bb_core::crypt::{self, Keys};
 use bb_core::j::{self, Json};
 use bb_core::proto::{Hello, Welcome};
-use bb_core::util::{out, Cli};
+use bb_core::util::Cli;
 
 use crate::config::{self, Config};
 
-pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
-    let (Some(addr), Some(code)) = (cli.pos.get(1), cli.pos.get(2)) else {
-        return Err(String::from("bb-worker join RELAY CODE -- both come from `bb pair` on the main machine"));
-    };
+/// what a machine lends when it joins and its owner said nothing
+pub fn fresh_config(dir: &str) -> Config {
+    let (cpu, ram, disk) = config::default_offer(dir);
+    Config { name: plat::net::hostname(), cpu, ram, disk, jobs: 4, priority: String::from("low"), keep_days: 14, ..Config::default() }
+}
+
+/// A line as people paste it -> (relay, code): "bb-worker join HOST:PORT CODE", or just
+/// "HOST:PORT CODE".  None when it holds no address and code.
+pub fn parse_line(line: &str) -> Option<(String, String)> {
+    let words: alloc::vec::Vec<&str> = line.split_whitespace().filter(|w| !matches!(*w, "bb-worker" | "bb-worker.exe" | "./bb-worker" | "join")).collect();
+    match words.as_slice() {
+        [addr, code] if crypt::code_ok(code) => Some((String::from(*addr), String::from(*code))),
+        _ => None,
+    }
+}
+
+/// Pair with the main machine that shows `code`, through the relay at `addr`.  `cfg` holds what
+/// this machine lends (fresh_config, then the owner's wishes); `say` gets progress lines.
+/// -> the config as it was saved.
+pub fn pair(dir: &str, addr: &str, code: &str, mut cfg: Config, say: &mut dyn FnMut(&str)) -> Result<Config, String> {
     if !crypt::code_ok(code) {
         return Err(format!("\"{}\" is not a pairing code (it looks like K7QF-2M9X-PD4T)", code));
     }
-    if let Some(old) = config::load(dir)
-        && !cli.flag("--force") {
-            return Err(format!("this machine is already paired with {} (as \"{}\"); --force pairs it anew", old.main_name, old.name));
-        }
-    let (off_cpu, off_ram, off_disk) = config::default_offer(dir);
-    let mut cfg = Config {
-        name: plat::net::hostname(),
-        cpu: off_cpu,
-        ram: off_ram,
-        disk: off_disk,
-        jobs: 4,
-        priority: String::from("low"),
-        ..Config::default()
-    };
-    config::apply_options(&mut cfg, cli, dir)?;
-
     // 1. the relay as it shows itself
     let (info, fp_seen) = Relay::probe(addr)?;
     let relay = Relay::open(addr, &fp_seen, "", "")?;
 
     // 2. + 3. the hello
-    out("deriving the pairing key ...\n");
+    say("deriving the pairing key ...");
     let (slot, key) = crypt::code_secrets(code, &info.relay_id);
     let keys = Keys::generate();
     let hello = Hello {
@@ -65,13 +65,13 @@ pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
     };
     let sealed = crypt::seal(&key, &crypt::aad("worker", "pair"), j::text(&hello.to_json()).as_bytes());
     relay.pair_put(&slot, "worker", &sealed).map_err(|e| match e.status {
-        404 => String::from("the relay has no pairing open for this code: is `bb pair` still running on the main machine, and is the code typed right?"),
-        409 => String::from("this pairing code was used already; run `bb pair` again for a new one"),
+        404 => String::from("the relay has no pairing open for this code: is the main machine still waiting (bb pair, or \"Add a machine\" in the app), and is the code typed right?"),
+        409 => String::from("this pairing code was used already; get a new one on the main machine"),
         _ => format!("{}", e),
     })?;
 
     // 4. the welcome
-    out("waiting for the main machine ...\n");
+    say("waiting for the main machine ...");
     let mut sealed = None;
     for _ in 0..8 {
         match relay.pair_get(&slot, "main", 20) {
@@ -80,11 +80,11 @@ pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
                 break;
             }
             Ok(None) => {}
-            Err(e) if e.status == 404 => return Err(String::from("the pairing ended before the main machine answered (it timed out or `bb pair` was stopped)")),
+            Err(e) if e.status == 404 => return Err(String::from("the pairing ended before the main machine answered (it timed out or was stopped there)")),
             Err(e) => return Err(format!("{}", e)),
         }
     }
-    let sealed = sealed.ok_or("the main machine did not answer; run `bb pair` again")?;
+    let sealed = sealed.ok_or("the main machine did not answer; get a new code there")?;
     let plain = crypt::open(&key, &crypt::aad("main", "pair"), &sealed).ok_or("the answer does not open with this code: it did not come from the main machine")?;
     let w = j::parse(&plain).and_then(|v| Welcome::from_json(&v)).ok_or("the main machine's answer is not readable")?;
     if !w.error.is_empty() {
@@ -114,6 +114,25 @@ pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
     cfg.main_public = w.main_public;
     cfg.data_key = w.data_key;
     config::save(dir, &cfg)?;
+    // a new pairing reads a new inbox from its start: the old position and the job ids seen
+    // under the old pairing mean nothing there (and would hide the first orders)
+    plat::delete(&plat::fs::join(dir, "state.json"));
+    Ok(cfg)
+}
+
+/// `bb-worker join RELAY CODE [options]`
+pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
+    let (Some(addr), Some(code)) = (cli.pos.get(1), cli.pos.get(2)) else {
+        return Err(String::from("bb-worker join RELAY CODE -- both come from `bb pair` on the main machine"));
+    };
+    if let Some(old) = config::load(dir)
+        && !cli.flag("--force")
+    {
+        return Err(format!("this machine is already paired with {} (as \"{}\"); --force pairs it anew", old.main_name, old.name));
+    }
+    let mut cfg = fresh_config(dir);
+    config::apply_options(&mut cfg, cli, dir)?;
+    let cfg = pair(dir, addr, code, cfg, &mut |m| bb_core::util::out(&format!("{}\n", m)))?;
     Ok(format!(
         "\nPaired with \"{}\" as worker \"{}\" ({}).\n\nThis machine lends:\n{}\n  change it any time:  bb-worker config --cpu 6 --ram 12G --disk 40G\n\nStart working:\n  bb-worker run                 in this terminal, or\n  bb-worker service install     as a system service that starts with the machine\n",
         cfg.main_name,

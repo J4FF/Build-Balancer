@@ -1,0 +1,8 @@
+# what the desktop app registers and how packages name it (JFLib's docs/PACKAGING.md)
+display=Build Balancer
+app_id=org.buildbalancer.BuildBalancer
+categories=Development;
+summary=Spread builds over the machines you own
+styles=netlab
+default_win=netlab
+default_linux=netlab

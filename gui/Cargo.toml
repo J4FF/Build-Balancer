@@ -1,0 +1,29 @@
+[package]
+name = "bb-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+build = "build.rs"
+
+# the desktop app: one window for a machine that lends its power, for the main machine, or both
+[[bin]]
+name = "BuildBalancer"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+base.workspace = true
+ui.workspace = true
+style.workspace = true
+bb_core.workspace = true
+bb_worker.workspace = true
+bb_main.workspace = true
+
+[build-dependencies]
+jflib-build.workspace = true

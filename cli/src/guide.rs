@@ -37,8 +37,10 @@ Choosing a worker.
 
 Commands and scripts.
   bb run -- cargo build --release          a program with arguments, no shell involved
-  bb run --sh \"make -j$BB_CPUS && make test\"   a script for the worker's shell (sh on Linux,
-                                           cmd on Windows; --shell bash|powershell|pwsh)
+  bb run --sh 'make -j$BB_CPUS && make test'   a script for the worker's shell (sh on Linux
+                                           and macOS, cmd on Windows; --shell bash|powershell|
+                                           pwsh).  Single quotes: $BB_CPUS is the worker's to
+                                           fill in, not the shell's that starts bb.
   --cwd sub/dir   --env NAME=VALUE   --timeout 30m
   The command runs in the same folder below the project's root that bb was started in.
   Windows and Linux workers differ: paths, shells, tool names.  Check \"os\" before you write
@@ -78,6 +80,10 @@ Jobs.  bb jobs --json | bb status JOB --json | bb logs JOB [-f] | bb cancel JOB
                sync failed, the worker restarted (see error; usually: fix and run again)
   Exit code of bb run / bb wait: the command's own, 130 cancelled, 137 killed, 1 error,
   124 not finished within --timeout.
+
+Tidying up.  A worker keeps a project (its files and the build output that grew there) for
+the next job.  bb clean -w NAME removes this project there, bb clean --all on every worker;
+the next job simply sends it again.  Workers also drop projects nobody used for some days.
 
 Rules of thumb.
   - Look at bb workers before every batch: owners change what they lend, machines go offline.

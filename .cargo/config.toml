@@ -6,15 +6,16 @@ linker = "rust-lld"
 [target.aarch64-pc-windows-msvc]
 linker = "rust-lld"
 
-# Linux programs are one static file each.  Always build them with --target (also on Linux):
-# without it Cargo hands these flags to the build scripts as well.
+# Linux programs are one static file each, linked by rust-lld.  Always build them with --target
+# (also on Linux): only then Cargo keeps these flags away from the build scripts, which are
+# programs of the machine that builds.  That is also why the linker is named here, among the
+# flags, and not as `linker = ...`: that setting would reach the build scripts on a Linux
+# machine even with --target, and they need the system's own linker.
 [target.x86_64-unknown-linux-gnu]
-linker = "rust-lld"
-rustflags = ["-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
+rustflags = ["-C", "linker=rust-lld", "-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
 
 [target.aarch64-unknown-linux-gnu]
-linker = "rust-lld"
-rustflags = ["-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
+rustflags = ["-C", "linker=rust-lld", "-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
 
 [alias]
 win = "build --release --target x86_64-pc-windows-msvc"

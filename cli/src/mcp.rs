@@ -284,8 +284,7 @@ fn call(dir: &str, name: &str, a: &Value) -> Result<Value, String> {
             }
             let from = a_u64(a, "from_byte");
             let max = a.get("max_bytes").and_then(Value::as_u64).unwrap_or(20_000).clamp(100, 1 << 20) as usize;
-            let mut b = jobs::log_from(&ctx, &rec.id, from);
-            b.truncate(max);
+            let mut b = jobs::log_part(&ctx, &rec.id, from, max);
             // do not cut a character in two
             while !b.is_empty() && core::str::from_utf8(&b).is_err_and(|e| e.error_len().is_none()) {
                 b.pop();

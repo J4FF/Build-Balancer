@@ -109,11 +109,6 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
         created: now(),
         label: req.label.clone(),
     };
-    let inbox = proto::inbox(&worker.id);
-    let order = proto::order(proto::ORDER_START, j::obj([("job", spec.to_json())]));
-    let sealed = crypt::seal(&key, &crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes());
-    ctx.relay.ch_append(&inbox, &sealed)?;
-
     let rec = JobRec {
         id: spec.id.clone(),
         worker_id: worker.id.clone(),
@@ -130,8 +125,18 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
         exit: -1,
         ..JobRec::default()
     };
+    // the record first: a job that runs on a worker while nothing here knows of it could be
+    // neither followed nor cancelled
     if !ctx.save_job(&rec) {
         return Err(format!("{} cannot be written", ctx.job_path(&rec.id, "json")));
+    }
+    let inbox = proto::inbox(&worker.id);
+    let order = proto::order(proto::ORDER_START, j::obj([("job", spec.to_json())]));
+    let sealed = crypt::seal(&key, &crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes());
+    if let Err(e) = ctx.relay.ch_append(&inbox, &sealed) {
+        // never sent: no record of a job that does not exist
+        plat::delete(&ctx.job_path(&rec.id, "json"));
+        return Err(format!("{}", e));
     }
     // the next job of this batch sees this worker as busier
     if let Some(v) = views.iter_mut().find(|v| v.paired.id == worker.id)
@@ -143,13 +148,16 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
     Ok(rec)
 }
 
-fn append_log(ctx: &Ctx, rec: &mut JobRec, text: &str) {
-    if let Some(f) = plat::File::open(&ctx.job_path(&rec.id, "log"), plat::FO_RW) {
-        let at = f.size().unwrap_or(rec.log_bytes);
-        if f.write_at(at, text.as_bytes()).is_some() {
-            rec.log_bytes = at + text.len() as u64;
-        }
+/// add output to the job's log file -> whether all of it is there now
+fn append_log(ctx: &Ctx, rec: &mut JobRec, text: &str) -> bool {
+    let Some(f) = plat::File::open(&ctx.job_path(&rec.id, "log"), plat::FO_RW) else { return false };
+    // at the place the record knows: what a failed attempt left beyond it is written over
+    let at = rec.log_bytes.min(f.size().unwrap_or(rec.log_bytes));
+    if f.write_at(at, text.as_bytes()) != Some(text.len()) {
+        return false;
     }
+    rec.log_bytes = at + text.len() as u64;
+    true
 }
 
 /// Read the job's new events (waiting up to `wait` seconds for the first) into the record and
@@ -180,9 +188,14 @@ pub fn pump(ctx: &Ctx, rec: &mut JobRec, wait: u32) -> Result<(), String> {
     if msgs.is_empty() {
         return Ok(());
     }
+    // an event counts as read once what it brought is kept: output that could not be written
+    // stays at the relay and is read again
+    let mut log_failed = false;
     for (seq, sealed) in msgs {
-        rec.after = seq;
-        let Some(ev) = crypt::open(&key, &aad, &sealed).and_then(|p| j::parse(&p)).and_then(|v| Event::from_json(&v)) else { continue };
+        let Some(ev) = crypt::open(&key, &aad, &sealed).and_then(|p| j::parse(&p)).and_then(|v| Event::from_json(&v)) else {
+            rec.after = seq;
+            continue;
+        };
         match ev {
             Event::State { state, detail, time } => {
                 if state == proto::ST_RUNNING && rec.started == 0 {
@@ -191,7 +204,12 @@ pub fn pump(ctx: &Ctx, rec: &mut JobRec, wait: u32) -> Result<(), String> {
                 rec.state = state;
                 rec.detail = detail;
             }
-            Event::Log { data, .. } => append_log(ctx, rec, &data),
+            Event::Log { data, .. } => {
+                if !append_log(ctx, rec, &data) {
+                    log_failed = true;
+                    break;
+                }
+            }
             Event::Done(d) => {
                 rec.state = d.state;
                 rec.detail = String::new();
@@ -205,8 +223,12 @@ pub fn pump(ctx: &Ctx, rec: &mut JobRec, wait: u32) -> Result<(), String> {
                 rec.ended = d.time;
             }
         }
+        rec.after = seq;
     }
-    ctx.save_job(rec);
+    if !ctx.save_job(rec) || log_failed {
+        // the relay keeps the events: they are read again once the record can be written
+        return Err(format!("{} cannot be written (is the disk full?)", ctx.job_path(&rec.id, if log_failed { "log" } else { "json" })));
+    }
     if proto::is_final(&rec.state) {
         // everything is kept here now: the relay can let the channel go
         let _ = ctx.relay.ch_delete(&channel);
@@ -214,18 +236,21 @@ pub fn pump(ctx: &Ctx, rec: &mut JobRec, wait: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// the bytes of a job's log from `from` on
+/// the bytes of a job's log from `from` on (64 MiB at most)
 pub fn log_from(ctx: &Ctx, id: &str, from: u64) -> Vec<u8> {
+    log_part(ctx, id, from, 64 << 20)
+}
+
+/// at most `max` bytes of a job's log from `from` on: only they are read
+pub fn log_part(ctx: &Ctx, id: &str, from: u64, max: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let Some(f) = plat::File::open(&ctx.job_path(id, "log"), plat::FO_READ) else { return out };
-    let mut buf = alloc::vec![0u8; 64 << 10];
-    loop {
-        match f.read_at(from + out.len() as u64, &mut buf) {
+    let mut buf = alloc::vec![0u8; max.clamp(1, 64 << 10)];
+    while out.len() < max {
+        let want = buf.len().min(max - out.len());
+        match f.read_at(from + out.len() as u64, &mut buf[..want]) {
             Some(n) if n > 0 => out.extend_from_slice(&buf[..n]),
             _ => break,
-        }
-        if out.len() > 64 << 20 {
-            break;
         }
     }
     out

@@ -1,0 +1,193 @@
+de	en
+# Build Balancer (the desktop app): the window's texts.  German source as the code writes it
+# (t("..."), tf("...")), a tab, the English text with the same "{}" placeholders in the same order.
+# A text without a row shows in German in every language.
+Navigation umschalten	Toggle navigation
+Dieses Gerät	This machine
+Hauptgerät	Main machine
+Geräte	Machines
+Aufträge	Jobs
+Projekt	Project
+Verbinden	Connect
+Die letzten Aufträge werden noch beendet – gleich noch einmal einschalten.	The last jobs are still ending – switch it on again in a moment.
+Nicht gespeichert	Not saved
+Entfernt	Removed
+{} frei	{} freed
+{} Projekte entfernt, {} frei	{} projects removed, {} freed
+{} Projekte entfernt, {} frei; {} bleiben, weil dort ein Auftrag läuft	{} projects removed, {} freed; {} stay because a job is running there
+Nicht alles entfernt	Not everything removed
+Eine Datei ist noch in einem anderen Programm geöffnet.	A file is still open in another program.
+Kopplung aufgehoben	Unpaired
+Auf diesem Gerät ist nichts mehr von Build Balancer übrig.	Nothing of Build Balancer is left on this machine.
+Es fehlt noch etwas	Something is missing
+Adresse und Code (oder Schlüssel) eintragen – oder die ganze Zeile einfügen.	Enter the address and the code (or key) – or paste the whole line.
+Demo	Demo
+In der Demo wird nichts verbunden.	The demo connects to nothing.
+Gekoppelt mit {} als {}	Paired with {} as {}
+{} ist jetzt das Hauptgerät von {}	{} is now the main machine of {}
+In der Demo wird nichts verändert.	The demo changes nothing.
+In der Demo wird nichts gestartet.	The demo starts nothing.
+Kein Befehl	No command
+Einen Befehl eintragen, zum Beispiel: cargo build --release	Enter a command, for example: cargo build --release
+Verbunden	Connected
+Das hat nicht geklappt	That did not work
+Nicht entfernt	Not removed
+Kein Code	No code
+Gerät gekoppelt	Machine paired
+{} ({}) gehört jetzt dazu.	{} ({}) is part of the fleet now.
+Nicht gekoppelt	Not paired
+Erledigt	Done
+Auftrag unterwegs	Job on its way
+{} läuft auf {}.	{} runs on {}.
+Nicht gestartet	Not started
+noch nie	never
+gerade eben	just now
+vor {} Minuten	{} minutes ago
+vor {} Stunden	{} hours ago
+vor {} Tagen	{} days ago
+fertig	done
+fehlgeschlagen	failed
+Fehler	error
+beendet (Limit)	ended (limit)
+abgebrochen	cancelled
+läuft	running
+Dateien kommen an	files arriving
+Ergebnisse gehen zurück	results going back
+wartet	waiting
+abgeschickt	sent
+Dieses Gerät mit dem Relay und den anderen Geräten zusammenbringen.	Bring this machine together with the relay and the other machines.
+Dieses Gerät verleiht Leistung	This machine lends power
+Das ist mein Hauptgerät	This is my main machine
+Mit einem Hauptgerät koppeln	Pair with a main machine
+Hauptgerät einrichten	Set up the main machine
+Auf dem Hauptgerät unter „Geräte“ auf „Gerät hinzufügen“ klicken (oder `bb pair` ausführen). Dort stehen die Adresse des Relays und ein Code, der einmal gilt.	On the main machine, open “Machines” and click “Add a machine” (or run `bb pair`). It shows the relay's address and a code that works once.
+Das Relay (bb-relay) zeigt beim Start die Zeile `bb setup ADRESSE SCHLÜSSEL`. Adresse und Schlüssel hier eintragen – oder die ganze Zeile in das erste Feld einfügen.	The relay (bb-relay) prints the line `bb setup ADDRESS KEY` when it starts. Enter address and key here – or paste the whole line into the first field.
+Adresse des Relays	Relay address
+Code	Code
+Einrichtungsschlüssel	Setup key
+Name dieses Geräts	Name of this machine
+Koppeln	Pair
+Einrichten	Set up
+Wartet auf das Hauptgerät …	Waiting for the main machine …
+Verbindet …	Connecting …
+Dieses Gerät ist	This machine is
+Leihgerät	Lending machine
+„{}“, gekoppelt mit {}	“{}”, paired with {}
+nein	no
+„{}“ am Relay {}	“{}” at the relay {}
+Dieses Gerät verleiht noch nichts	This machine lends nothing yet
+Mit einem Hauptgerät koppeln, dann kann es Builds hierher schicken. Wie viel dieser Rechner hergibt, bestimmst du.	Pair it with a main machine, which can then send builds here. How much this computer gives is up to you.
+Koppeln …	Pair …
+verleiht Leistung an „{}“	lends power to “{}”
+angehalten	paused
+verbunden	connected
+Relay nicht erreichbar	relay not reachable
+Leistung verleihen	Lend power
+Der Worker läuft nicht	The worker is not running
+Was dieses Gerät verleiht	What this machine lends
+Prozessoren	Processors
+{} von {}	{} of {}
+Arbeitsspeicher	Memory
+Festplatte	Disk
+{} für Projekte	{} for projects
+Rücksicht nehmen: Aufträge laufen mit niedriger Priorität	Be considerate: jobs run at low priority
+Aufträge gleichzeitig	Jobs at once
+Unbenutzte Projekte entfernen nach Tagen (0 = nie)	Remove unused projects after days (0 = never)
+Gerade	Right now
+{} Prozessoren	{} processors
+Nichts läuft. Aufträge des Hauptgeräts starten von selbst.	Nothing is running. Jobs of the main machine start by themselves.
+Angehalten: es kommen keine Aufträge an.	Paused: no jobs arrive.
+Projekte auf diesem Gerät	Projects on this machine
+{} von {} belegt	{} of {} used
+Alles entfernen	Remove everything
+Hier liegt nichts. Ein Projekt kommt mit seinem ersten Auftrag und bleibt für die nächsten – entfernen lässt es sich jederzeit mit einem Klick.	Nothing here. A project arrives with its first job and stays for the next ones – one click removes it at any time.
+{} · zuletzt benutzt {}	{} · last used {}
+Entfernen	Remove
+Hier läuft gerade ein Auftrag.	A job is running here right now.
+Wird entfernt …	Removing …
+Werkzeuge für Aufträge	Tools for jobs
+Wird gesucht …	Looking …
+Werden gesucht, sobald das Gerät Leistung verleiht.	They are looked for once the machine lends power.
+Kopplung aufheben und alles entfernen …	Unpair and remove everything …
+Das ist kein Hauptgerät	This is not a main machine
+Ein Hauptgerät verteilt Builds auf die Geräte, die Leistung verleihen. Dazu braucht es ein Relay (bb-relay) und dessen Einrichtungsschlüssel.	A main machine spreads builds over the machines that lend power. It needs a relay (bb-relay) and its setup key.
+Als Hauptgerät einrichten …	Set up as main machine …
+Relay {}	Relay {}
+Aktualisieren	Refresh
+Gerät hinzufügen	Add a machine
+Der Code wird vorbereitet …	Preparing the code …
+Neues Gerät koppeln	Pair a new machine
+Auf dem anderen Gerät Build Balancer starten, „Dieses Gerät verleiht Leistung“ wählen und eintragen:	On the other machine, start Build Balancer, choose “This machine lends power” and enter:
+Ohne Fenster geht es mit einer Zeile im Terminal: {}	Without a window, one line in a terminal does it: {}
+Zeile kopieren	Copy the line
+Kopiert	Copied
+Abbrechen	Cancel
+Wartet auf das Gerät … der Code gilt noch {} Minuten, einmal.	Waiting for the machine … the code works for {} more minutes, once.
+Das Relay antwortet nicht	The relay does not answer
+Noch kein Gerät	No machine yet
+„Gerät hinzufügen“ zeigt einen Code. Auf dem anderen Rechner Build Balancer starten und ihn eintragen – mehr ist nicht nötig.	“Add a machine” shows a code. Start Build Balancer on the other computer and enter it – nothing more is needed.
+Geräte werden geladen …	Loading the machines …
+am Relay entfernt	removed at the relay
+online	online
+noch nie gesehen	never seen
+offline seit {}	offline for {}
+{} von {} frei · {} im Gerät	{} of {} free · {} in the machine
+{} von {} frei	{} of {} free
+Festplatte für Projekte	Disk for projects
+Werkzeuge	Tools
+{} räumt „{}“ weg.	{} is clearing “{}” away.
+Hat sich noch nicht gemeldet: läuft Build Balancer dort, und ist „Leistung verleihen“ eingeschaltet?	It has not reported yet: is Build Balancer running there, with “Lend power” switched on?
+Entkoppeln …	Unpair …
+Was dieses Hauptgerät an die Geräte geschickt hat.	What this main machine has sent to the machines.
+Noch kein Auftrag	No job yet
+Unter „Projekt“ eine Aufgabe starten – oder im Terminal `bb run -- BEFEHL`. Auch was ein KI-Agent über `bb` startet, erscheint hier.	Start a task under “Project” – or run `bb run -- COMMAND` in a terminal. What an AI agent starts through `bb` shows up here too.
+{} · {} · {}	{} · {} · {}
+Gerät	Machine
+Ergebnis	Result
+Exit-Code {} nach {}	Exit code {} after {}
+Speicher	Memory
+höchstens {}	at most {}
+keine Datei passte zu den Mustern	no file matched the patterns
+{} Dateien, {} liegen am Relay	{} files, {} wait at the relay
+{} Dateien, {} in {}	{} files, {} in {}
+Ergebnisdateien	Result files
+Stand	State
+{} wird abgebrochen.	{} is being cancelled.
+Ergebnisse holen	Fetch the results
+{} Dateien in {}	{} files in {}
+Aus der Liste nehmen	Take it off the list
+Der Auftrag ist aus der Liste.	The job is off the list.
+Ausgabe (das Ende)	Output (the end)
+(noch keine Ausgabe)	(no output yet)
+Einen Ordner an ein Gerät schicken und dort bauen lassen.	Send a folder to a machine and have it built there.
+Noch kein Ordner gewählt	No folder chosen yet
+Ordner wählen …	Choose a folder …
+Welches Projekt?	Which project?
+Den Ordner wählen, der gebaut werden soll. Geschickt wird alles darin außer dem, was .gitignore und .bbignore ausnehmen.	Choose the folder that is to be built. Everything in it is sent except what .gitignore and .bbignore leave out.
+buildbalancer.ini ist nicht lesbar	buildbalancer.ini cannot be read
+Dieser Ordner ist noch kein Projekt	This folder is not a project yet
+Einrichten schreibt eine Datei hinein, buildbalancer.ini – sonst nichts. Darin stehen der Name des Projekts und, wenn du magst, Aufgaben: Befehle mit dem, was sie brauchen und was zurückkommen soll.	Setting it up writes one file into it, buildbalancer.ini – nothing else. It holds the project's name and, if you like, tasks: commands with what they need and what should come back.
+Als Projekt einrichten	Set up as a project
+Nicht eingerichtet	Not set up
+Automatisch	Automatic
+Ausführen auf	Run on
+Aufgaben von „{}“	Tasks of “{}”
+Noch keine. In buildbalancer.ini einen Abschnitt [task.NAME] mit „run = BEFEHL“ anlegen – oder unten einen Befehl direkt ausführen.	None yet. Add a section [task.NAME] with “run = COMMAND” to buildbalancer.ini – or run a command directly below.
+Dateien werden verglichen und geschickt …	Comparing and sending files …
+Einen Befehl ausführen	Run a command
+Befehl	Command
+Zurückholen (Muster)	Bring back (patterns)
+Ausführen	Run
+   ·   braucht {}	   ·   needs {}
+   ·   bringt {} zurück	   ·   brings {} back
+Starten	Start
+Kopplung aufheben?	Unpair?
+Dieses Gerät vergisst das Hauptgerät, und alles, was Build Balancer hier abgelegt hat, wird entfernt: Projekte, Protokolle, Einstellungen. Laufende Aufträge werden abgebrochen.	This machine forgets the main machine, and everything Build Balancer has put here is removed: projects, logs, settings. Running jobs are cancelled.
+Gerät entkoppeln?	Unpair the machine?
+„{}“ bekommt keine Aufträge mehr und wird am Relay entfernt. Was dort noch liegt, räumt das Gerät selbst weg (dort: „Kopplung aufheben“).	“{}” gets no more jobs and is removed at the relay. What still lies there, the machine clears away itself (there: “Unpair”).
+Entkoppeln	Unpair
+„{}“ ist entkoppelt.	“{}” is unpaired.
+Beenden, obwohl Aufträge laufen?	Quit although jobs are running?
+Auf diesem Gerät laufen gerade Aufträge. Beim Beenden werden sie abgebrochen; das Hauptgerät erfährt es.	Jobs are running on this machine right now. Quitting cancels them; the main machine is told.
+Beenden	Quit
+Weiterlaufen lassen	Keep running

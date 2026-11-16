@@ -55,6 +55,11 @@ impl Cores {
         self.lent != 0
     }
 
+    /// how many of the lent processors no job holds
+    pub fn free_count(&self) -> u32 {
+        self.free.count_ones()
+    }
+
     /// take `count` free processors -> their mask (0: not pinning, or not enough free ones)
     pub fn take(&mut self, count: u32) -> u64 {
         if self.lent == 0 || self.free.count_ones() < count {

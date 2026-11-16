@@ -12,7 +12,8 @@
 //   own_pid(), processes(), rss(pid)  every process with its parent; a process's resident memory
 //
 // The only file of Build Balancer with `unsafe`: Windows calls through raw-dylib imports (no
-// import libraries), Linux through the system calls of rt::os and the files of /proc.
+// import libraries), Linux through the system calls of rt::os and the files of /proc, macOS
+// through libSystem.
 #![allow(unsafe_code)]
 
 use alloc::vec::Vec;
@@ -185,7 +186,121 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: libSystem's calls (it is linked into every program there).  The system has no way to
+/// hold a process to chosen processors, so nothing is pinned: jobs get the lent number as a
+/// hint (BB_CPUS and the tools' own variables).  A lower priority comes from `nice` in front
+/// of the job's command (run.rs): a process there cannot lower what it starts and keep its own.
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::ProcInfo;
+    use alloc::vec::Vec;
+    use core::ffi::{c_char, c_int, c_void};
+
+    /// proc_pidinfo flavours and the sizes of their records (<sys/proc_info.h>)
+    const PROC_PIDTBSDINFO: c_int = 3;
+    const PROC_PIDTASKINFO: c_int = 4;
+    const BSDINFO_SIZE: usize = 136;
+    const TASKINFO_SIZE: usize = 96;
+    /// host_statistics flavours (<mach/host_info.h>)
+    const HOST_CPU_LOAD_INFO: c_int = 3;
+    const HOST_VM_INFO64: c_int = 4;
+
+    unsafe extern "C" {
+        fn getpid() -> c_int;
+        fn sysctlbyname(name: *const c_char, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> c_int;
+        fn proc_listallpids(buffer: *mut c_void, buffersize: c_int) -> c_int;
+        fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: *mut c_void, buffersize: c_int) -> c_int;
+        fn mach_host_self() -> u32;
+        fn host_statistics(host: u32, flavor: c_int, info: *mut u32, count: *mut u32) -> c_int;
+        fn host_statistics64(host: u32, flavor: c_int, info: *mut u32, count: *mut u32) -> c_int;
+    }
+
+    pub fn affinity() -> u64 {
+        0
+    }
+
+    pub fn set_affinity(_mask: u64) -> bool {
+        false
+    }
+
+    pub fn lower_priority() -> u32 {
+        0
+    }
+
+    pub fn restore_priority(_old: u32) {}
+
+    fn page_size() -> u64 {
+        let mut v = 0u64;
+        let mut len = core::mem::size_of::<u64>();
+        // SAFETY: the name ends with NUL; the value and its length are live and as long as said.
+        let r = unsafe { sysctlbyname(c"hw.pagesize".as_ptr(), &mut v as *mut u64 as *mut c_void, &mut len, core::ptr::null(), 0) };
+        if r == 0 && v != 0 { v } else { 16384 }
+    }
+
+    pub fn mem_available() -> u64 {
+        // vm_statistics64 starts with free, active, inactive and wired page counts (32 bit each);
+        // the buffer is larger than every version of the record
+        let mut info = [0u32; 64];
+        let mut count = info.len() as u32;
+        // SAFETY: the buffer holds `count` 32-bit values; the port needs no release for one call.
+        if unsafe { host_statistics64(mach_host_self(), HOST_VM_INFO64, info.as_mut_ptr(), &mut count) } != 0 {
+            return 0;
+        }
+        (info[0] as u64 + info[2] as u64) * page_size()
+    }
+
+    pub fn cpu_times() -> (u64, u64) {
+        // host_cpu_load_info: ticks of user, system, idle, nice
+        let mut ticks = [0u32; 4];
+        let mut count = 4u32;
+        // SAFETY: the buffer holds the four values the flavour gives.
+        if unsafe { host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, ticks.as_mut_ptr(), &mut count) } != 0 {
+            return (0, 0);
+        }
+        let total: u64 = ticks.iter().map(|t| *t as u64).sum();
+        (total - ticks[2] as u64, total)
+    }
+
+    pub fn own_pid() -> u32 {
+        // SAFETY: no arguments.
+        unsafe { getpid() as u32 }
+    }
+
+    pub fn processes() -> Vec<ProcInfo> {
+        let mut out = Vec::new();
+        // SAFETY: a null buffer asks for the number of processes.
+        let n = unsafe { proc_listallpids(core::ptr::null_mut(), 0) };
+        if n <= 0 {
+            return out;
+        }
+        let mut pids = alloc::vec![0i32; n as usize + 64];
+        // SAFETY: the buffer is as long as the call is told, in bytes.
+        let got = unsafe { proc_listallpids(pids.as_mut_ptr() as *mut c_void, (pids.len() * 4) as c_int) };
+        for &pid in pids.iter().take(got.max(0) as usize) {
+            if pid <= 0 {
+                continue;
+            }
+            // proc_bsdinfo: flags, status, xstatus, pid, ppid (32 bit each) come first
+            let mut info = [0u32; BSDINFO_SIZE / 4];
+            // SAFETY: the buffer has the record's size; a process of another user gives 0.
+            let r = unsafe { proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, info.as_mut_ptr() as *mut c_void, BSDINFO_SIZE as c_int) };
+            if r as usize == BSDINFO_SIZE {
+                out.push(ProcInfo { pid: pid as u32, parent: info[4], rss: 0 });
+            }
+        }
+        out
+    }
+
+    pub fn rss(pid: u32) -> u64 {
+        // proc_taskinfo: the virtual size, then the resident size (64 bit each)
+        let mut info = [0u64; TASKINFO_SIZE / 8];
+        // SAFETY: the buffer has the record's size.
+        let r = unsafe { proc_pidinfo(pid as c_int, PROC_PIDTASKINFO, 0, info.as_mut_ptr() as *mut c_void, TASKINFO_SIZE as c_int) };
+        if r as usize == TASKINFO_SIZE { info[1] } else { 0 }
+    }
+}
+
+#[cfg(target_os = "linux")]
 mod imp {
     use super::ProcInfo;
     use alloc::format;

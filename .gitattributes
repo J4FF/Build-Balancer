@@ -1,2 +1,5 @@
-# shell scripts keep their line ends on every system (a CR breaks them on Linux)
-*.sh text eol=lf
+# The same bytes on every system: shell and test scripts break on a CR, and what is compiled
+# into the programs (the locale catalogue, PACKAGE) must not differ between a Windows and a
+# Linux checkout.
+* text=auto eol=lf
+*.png binary
