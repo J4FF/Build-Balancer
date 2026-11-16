@@ -1,0 +1,2 @@
+# shell scripts keep their line ends on every system (a CR breaks them on Linux)
+*.sh text eol=lf

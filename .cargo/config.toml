@@ -1,0 +1,21 @@
+# What a build script cannot set.  rust-lld comes with rustup, so neither target needs a C
+# toolchain or a Windows SDK, and both build from Windows and from Linux alike.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld"
+
+# Linux programs are one static file each.  Always build them with --target (also on Linux):
+# without it Cargo hands these flags to the build scripts as well.
+[target.x86_64-unknown-linux-gnu]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static", "-C", "relocation-model=static"]
+
+[alias]
+win = "build --release --target x86_64-pc-windows-msvc"
+linux = "build --release --target x86_64-unknown-linux-gnu"

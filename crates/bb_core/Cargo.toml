@@ -1,0 +1,21 @@
+[package]
+name = "bb_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+base.workspace = true
+crypto.workspace = true
+compress.workspace = true
+netio.workspace = true
+agent_core.workspace = true

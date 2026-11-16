@@ -1,0 +1,178 @@
+# Architecture
+
+How the three programs fit together, what travels between them and how it is protected.
+The source files say the same in their head comments; this is the map.
+
+## The parts
+
+| Program | Runs on | Does |
+| --- | --- | --- |
+| `bb` | the main machine | decides and submits: scans the project, uploads what is missing, seals a job for a worker, reads its events, fetches its outputs |
+| `bb-worker` | every machine that lends power | asks the relay for orders, syncs the project into a workspace, runs the command under the owner's limits, sends output and results |
+| `bb-relay` | one address all of them reach | admits devices, passes sealed messages on (channels), stores encrypted file content (blobs) |
+
+Every program only makes outgoing HTTPS connections to the relay. Nothing listens on a
+worker or on the main machine, so NAT, laptops on the road and firewalls are no obstacle.
+In one network the relay can simply run on the main machine.
+
+```
+bb ──┐                                     ┌── bb-worker  (long poll: "<worker>/in")
+     ├── HTTP/1.1 + TLS 1.3, bearer token ─┤
+bb ──┘            bb-relay                 └── bb-worker
+                  ├ devices     who is admitted (token hashes), last seen, sealed status
+                  ├ pairing     slots that hold the two messages of a pairing for minutes
+                  ├ channels    append-only lists of sealed messages, read with long polls
+                  └ blobs       encrypted chunks by id, least recently used go first
+```
+
+## Keys
+
+| Key | Made by | Held by | Used for |
+| --- | --- | --- | --- |
+| device key (X25519) | each device, once | that device (`main.json` / `worker.json`) | the pair key |
+| pair key | X25519 of two device keys, through HKDF-SHA256 over both public keys | main machine and one worker | sealing jobs, events and status between the two |
+| data key (32 random bytes) | the main machine, at setup | the main machine and every worker (handed over in the pairing) | blob ids and blob encryption, so content one device uploaded serves all |
+| access token | the relay (main machine) / the main machine (workers) | the device; the relay keeps its BLAKE3 hash | being admitted at the relay |
+| relay certificate (Ed25519, self-signed) | the relay, at its first start | the relay; devices pin its SHA-256 | TLS |
+
+The relay holds no pair key and no data key.
+
+**Sealed message** = 24 random bytes of nonce ‖ XChaCha20-Poly1305(pair key, nonce,
+associated data, JSON). The associated data is `bb1|<sender id>|<channel>`, so a message moved
+into another channel, or sent back to its author, does not open.
+
+**Blob** = one pack byte (0 stored, 1 LZ4, 2 zstd) ‖ XChaCha20-Poly1305(encryption key, nonce,
+`bb1blob`‖pack‖id, packed content). The id is BLAKE3 keyed with a key derived from the data
+key; the nonce is derived from the id. Equal content therefore gives the equal blob (stored
+once, an upload can be repeated), and the relay cannot test a guess of a file against an id.
+After decryption the content must hash to the id it was asked for by.
+
+## Pairing
+
+```
+main machine                        relay                          new worker
+bb pair
+  code = 12 random characters (60 bits)
+  slot, key = Argon2id(code, salt = relay id)      32 MiB, 2 passes
+  POST /v1/pair/<slot>/open ───────▶ slot open for 10 min
+  shows:  bb-worker join RELAY CODE
+                                                                   bb-worker join RELAY CODE
+                                                    ◀── GET /v1/info   (notes the certificate it sees)
+                                                                   slot, key = Argon2id(code, relay id)
+                                    hello ◀──────── POST /v1/pair/<slot>/worker
+                                                    seal(key, {name, public key, os, certificate seen})
+  GET /v1/pair/<slot>/worker ◀────── hello
+  opens it with key; checks the certificate the worker saw against its own pin
+  POST /v1/devices {id, name, token hash}          admits the worker
+  POST /v1/pair/<slot>/main ───────▶ welcome ─────▶ GET /v1/pair/<slot>/main
+  seal(key, {main's public key, worker id, token, data key, pinned certificate})
+                                                                   checks the certificate again, keeps everything
+```
+
+The relay sees the slot (16 bytes of the Argon2id output) and two sealed messages. Guessing
+the code from the slot costs an Argon2id run per guess over 2^60 codes; the slot lives for
+minutes and takes one hello. A relay (or someone in the path) that answered the worker with
+its own certificate is caught by the comparison in the last step, because the main machine's
+pin travels inside the sealed welcome.
+
+The setup key that makes a machine the main machine is 16 random bytes (a one-time token, the
+relay keeps its hash in `setup.hash`) and the certificate's fingerprint, base64url. Whoever can
+run `bb-relay setup-key` on the server can make a main machine: the server's file system is
+the authority.
+
+## A job
+
+```
+bb run -w laptop --out "build/**" -- make
+
+ 1. scan the project        Tree: every file with size and chunk ids (4 MiB chunks);
+                            files known with the same size and time are not read again
+ 2. upload                  ask the relay which chunk ids it lacks, send those in packs;
+                            the Tree's text itself becomes blobs: a TreeRef names them
+ 3. order                   JobSpec {id, project, slot, TreeRef, argv | script, cpu, ram,
+                            timeout, outputs} sealed into channel "<worker>/in"
+ 4. worker: queued          checked (protocol, paths, memory asked for), waits for processors
+ 5. worker: syncing         fetch the Tree; compare with what the last sync wrote ("known");
+                            fetch changed files, remove files the last Tree had and this one
+                            has not; everything else in the workspace (build output) stays
+ 6. worker: running         start the command pinned to the job's processors; output goes
+                            as sealed events into "<main>/job/<job id>" and into out.log
+ 7. worker: collecting      expand the output patterns, upload those files, TreeRef of them
+ 8. done                    {state, exit, duration, peak memory, outputs' TreeRef}
+ 9. bb                      reads the events (long poll), prints the output, fetches the
+                            outputs into the project folder, deletes the channel
+```
+
+`bb` need not stay: events wait in the job's channel, and any later `bb status / logs / wait`
+reads on from the number of the last event it saw (kept in the job's record). The job's lock
+file lets several `bb` processes follow one job without reading events twice.
+
+A worker need not be online when a job is sent: the order waits in its inbox.
+
+### States
+
+`submitted → queued → syncing → running → collecting → done | failed | cancelled | killed | error`
+
+`failed` is a command that ended with a non-zero exit code; `killed` a limit (time, memory,
+disk); `error` a job that never ran or whose result is incomplete (no such program, sync
+failed, worker restarted).
+
+### Workspaces
+
+`<worker data>/ws/<project id>/<slot>/tree` holds the project's files, `known` what the sync
+wrote (size, time, chunk ids per file), `meta.json` its size and last use. Jobs of one
+project and slot never run at the same time. Only files a sync wrote are ever removed by a
+sync; a file a build changed is fetched again when the next Tree still has the old content.
+
+## The relay's interface
+
+Plain JSON where the relay has to understand (devices), opaque bytes everywhere else.
+`Authorization: Bearer <device id>.<token>`.
+
+| Request | Who | |
+| --- | --- | --- |
+| `GET /v1/info` | anyone | product, version, protocol, relay id |
+| `POST /v1/claim` | setup key | become a main machine |
+| `GET/POST /v1/devices`, `DELETE /v1/devices/<id>` | main | admit, list (last seen, sealed status), remove |
+| `POST /v1/pair/<slot>/open` | main | open a pairing slot |
+| `POST/GET /v1/pair/<slot>/worker`, `.../main` | the slot / main | the two pairing messages |
+| `PUT /v1/status` | device | its sealed status |
+| `POST /v1/ch/<owner>/<topic>` | device | append a message (up to 1 MiB) |
+| `GET /v1/ch/<owner>/<topic>?after=N&wait=S` | owner, main | messages after N: frames of number (u64), length (u32), bytes; waits up to S seconds |
+| `DELETE /v1/ch/<owner>/<topic>` | owner, main | |
+| `POST /v1/blobs/has` | device | ids (32 bytes each) -> one byte each |
+| `POST /v1/blobs/put` | device | a pack: id, length (u32), bytes, repeated |
+| `POST /v1/blobs/get` | device | ids -> id, length (u32; ffffffff = not there), bytes, repeated |
+| `GET /v1/stats` | main | counts and sizes |
+
+Channels are files (`channels/*.ch`), blobs are files (`blobs/ab/<id>`); the relay keeps only
+indexes in memory, so a restart loses nothing. Blobs beyond `--store-limit` go, least
+recently used first; channels nobody touched for `--keep-days` go. A job whose blobs were
+dropped fails with a message that says so, and sending the project again repairs it.
+
+## Limits on a worker
+
+- **Processors.** `Cores` deals the lent processors out as bit masks; a job's process is
+  started while the worker's own affinity is set to the job's mask (Windows: the process's,
+  Linux: the starting thread's), so the child and everything it starts inherit it.
+- **Priority.** The same way: below-normal class (Windows) or nice 10 (Linux) around the
+  start of the job's process. The worker itself keeps normal priority -- it has to answer.
+- **Memory.** Each job's thread sums the resident memory of the job's process tree every two
+  seconds (Windows: a process snapshot and working sets; Linux: `/proc/<pid>/status`). The
+  scheduler adds the jobs up and ends the one furthest above its reservation when the sum
+  passes what is lent.
+- **Disk.** Workspace sizes are recorded after every job. A sync first makes room by removing
+  workspaces unused the longest; while a job runs, the volume's free space is watched and the
+  workspace measured when it shrank enough to matter.
+
+## Built on JFLib
+
+The programs are `#![no_std]` and use JFLib's crates for everything below them: `rt`
+(runtime), `plat` (files, sockets, threads, processes, services), `netio` (HTTP/1.1 server
+and client, TLS 1.3, X.509), `crypto` (X25519, XChaCha20-Poly1305, BLAKE3, Argon2id, HKDF),
+`compress` (LZ4, zstd), `base` (INI, glob), `agent_core` / `agent_io` (JSON, stdio framing).
+They depend on those crates directly at one exact version instead of the facade crate
+`jflib`, which would compile the whole GUI stack for three headless programs.
+
+The one place with `unsafe` is `crates/bb_exec/src/sys.rs`: the handful of system calls for
+processor affinity, priority, free memory and the process list that `plat` has no use for.
