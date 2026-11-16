@@ -444,6 +444,27 @@ fn worker_card(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView) {
     ui.text(TS_CAPTION | TX_SECONDARY | TX_ELLIPSIS, &format!("{} · {}{}{}", v.paired.os, v.paired.arch, if model.is_empty() { "" } else { " · " }, model));
     ui.box_end();
 
+    // its version, and one click to bring an older one up to this machine's
+    if let Some(s) = v.status.as_ref().filter(|s| !s.version.is_empty()) {
+        ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+        ui.text(TS_CAPTION | TX_SECONDARY, &tf("Version {}", &[&s.version]));
+        if bb_update::newer(bb_core::VERSION, &s.version) && !bb_update::can_update_itself(&s.version) {
+            // it would take the word and do nothing: only from 0.1.2 on a program knows it
+            ui.text(TS_CAPTION | TX_SECONDARY, t("kann sich noch nicht selbst aktualisieren – dort einmal die Installationszeile ausführen"));
+        } else if bb_update::newer(bb_core::VERSION, &s.version) {
+            ui.next_flags(ST_COMPACT);
+            ui.next_icon(IC_DOWNLOAD);
+            if ui.button(base + 41, t("Update einspielen")) & EV_ACT != 0 {
+                let worker = v.paired.clone();
+                g.act(ui, move |ctx| {
+                    ops::ask_update(ctx, &worker)?;
+                    Ok(tf("{} holt die neue Version, sobald dort kein Auftrag läuft, und meldet sich danach wieder.", &[&worker.name]))
+                });
+            }
+        }
+        ui.box_end();
+    }
+
     if let Some(s) = &v.status {
         let n = |x: u32| format!("{}", x);
         ui.gridbox_begin(base + 1, &[-1, -1, -1], 0, 16);
@@ -749,6 +770,77 @@ fn task_row(ui: &mut Ui, base: u32, task: &Task, warning: Option<String>, busy: 
     ui.box_end();
 }
 
+// ------------------------------------------------------------------------- settings
+
+pub fn settings(g: &mut Gui, ui: &mut Ui) {
+    ui.page_header(t("Einstellungen"), t("Die Version dieses Programms und neuere."));
+    ui.spacer(12);
+    card_begin(ui, t("Version und Updates"));
+    ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+    ui.text(TS_BODY | TX_SECONDARY, t("Installierte Version"));
+    ui.text(TS_BODY_STRONG, bb_core::VERSION);
+    ui.box_end();
+
+    let newer = g.upd_found.as_ref().filter(|c| c.newer).map(|c| c.latest.clone());
+    if g.upd_install.is_some() {
+        busy_row(ui, id::SETTINGS + 1, t("Die neue Version wird geholt, geprüft und eingespielt …"));
+        ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, t("Build Balancer startet danach von selbst neu und verbindet sich wieder."));
+    } else if g.upd_waiting {
+        busy_row(ui, id::SETTINGS + 1, t("Hier laufen gerade Aufträge. Das Update startet, sobald sie fertig sind."));
+    } else if g.upd_check.is_some() {
+        busy_row(ui, id::SETTINGS + 1, t("Es wird nach einer neueren Version gesucht …"));
+    } else if let Some(v) = &newer {
+        ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+        ui.badge(BADGE_ACCENT, t("neu"));
+        ui.text(TS_BODY, &tf("Version {} ist verfügbar.", &[v]));
+        ui.box_end();
+        ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, t("Ein Klick holt sie, prüft sie und spielt sie ein. Build Balancer startet danach von selbst neu und verbindet sich wieder."));
+    } else if g.upd_found.is_some() {
+        ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+        ui.badge(BADGE_OK, t("aktuell"));
+        ui.text(TS_BODY, t("Das ist die neueste Version."));
+        ui.box_end();
+    }
+    if !g.upd_error.is_empty() && ui.infobar(id::SETTINGS + 2, IB_WARNING, t("Die Suche hat nicht geklappt"), &g.upd_error.clone()) & EV_ACT != 0 {
+        g.upd_error.clear();
+    }
+
+    let working = g.upd_install.is_some() || g.upd_check.is_some() || g.upd_waiting;
+    ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+    if newer.is_some() {
+        if working {
+            ui.next_flags(ST_DISABLED);
+        }
+        ui.next_icon(IC_DOWNLOAD);
+        if ui.accent_button(id::SETTINGS + 3, t("Jetzt aktualisieren")) & EV_ACT != 0 {
+            g.update_now(ui);
+        }
+    }
+    if working {
+        ui.next_flags(ST_DISABLED);
+    }
+    ui.next_icon(IC_REFRESH);
+    if ui.button(id::SETTINGS + 4, t("Nach Updates suchen")) & EV_ACT != 0 {
+        g.upd_found = None;
+        g.check_updates(ui);
+    }
+    ui.box_end();
+
+    let mut auto = g.upd_auto;
+    if ui.switch(id::SETTINGS + 5, t("Beim Start nach Updates suchen"), &mut auto) & EV_ACT != 0 {
+        g.set_update_auto(auto != 0);
+    }
+    let dir = bb_update::own_dir().unwrap_or_default();
+    ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, &tf("Neue Versionen kommen von {} und werden vor dem Einspielen gegen ihre Prüfsumme geprüft. Die Programme liegen in {}.", &[&format!("{}/releases", bb_core::REPOSITORY), &dir]));
+    card_end(ui);
+
+    if g.is_main() {
+        card_begin(ui, t("Die anderen Geräte"));
+        ui.text(TS_BODY | TX_SECONDARY | TX_WRAP, t("Unter „Geräte“ steht bei jedem Gerät seine Version. „Update einspielen“ dort lässt es die neue Version selbst holen und neu starten – ohne dass jemand hingehen muss."));
+        card_end(ui);
+    }
+}
+
 // ------------------------------------------------------------------------- questions
 
 pub fn dialogs(g: &mut Gui, ui: &mut Ui) {
@@ -813,6 +905,8 @@ fn demo_status(name: &str, os: &str, cpu: (u32, u32, u32), ram_gib: (u64, u64), 
 
 pub fn demo(g: &mut Gui) {
     g.page = Page::Worker;
+    // a newer version, so the settings show what they are for
+    g.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from("0.2.0"), newer: true });
     g.lend = 1;
     g.wcfg = Some(Config { name: String::from("laptop"), id: String::from("w-demo000001"), main_name: String::from("werkbank"), cpu: 6, ram: 12 << 30, disk: 40 << 30, jobs: 4, priority: String::from("low"), keep_days: 14, ..Config::default() });
     let mut me = demo_status("laptop", "linux", (2, 6, 8), (8, 12), (11, 40), &["cargo", "rustc", "gcc", "g++", "clang", "cmake", "make", "python3", "git"]);

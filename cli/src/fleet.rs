@@ -254,8 +254,26 @@ pub fn table(views: &[WorkerView]) -> String {
         if let Some(h) = hint(v) {
             out += &format!("\n{}: {}\n", v.paired.name, h);
         }
+        if let Some(s) = v.status.as_ref().filter(|s| older(&s.version)) {
+            let how = if bb_update::can_update_itself(&s.version) {
+                format!("`bb update -w {}` has it fetch the newest release and start again.", v.paired.name)
+            } else {
+                // it would take the order and do nothing: only from this version on a program knows it
+                format!("It cannot update itself yet (that came with {}): run the install line there once more ({}#set-it-up-in-three-steps).", bb_update::FIRST, bb_core::REPOSITORY)
+            };
+            out += &format!("\n{}: runs version {} (this machine: {}).  {}\n", v.paired.name, s.version, bb_core::VERSION, how);
+        }
     }
     out
+}
+
+/// whether a worker's version is older than this program's
+pub fn older(version: &str) -> bool {
+    let n = |v: &str| -> Option<[u32; 3]> {
+        let mut it = v.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u32>().ok());
+        Some([it.next()??, it.next()??, it.next()??])
+    };
+    matches!((n(version), n(bb_core::VERSION)), (Some(a), Some(b)) if a < b)
 }
 
 /// what to do about a worker that is not there (None: it is)

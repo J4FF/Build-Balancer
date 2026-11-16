@@ -27,7 +27,11 @@ if [ -e "$own" ] || sudo test -e "$system" || [ -e /etc/systemd/system/buildbala
     exit 2
 fi
 port=${BB_SERVICE_PORT:-7792}
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
+[ -n "$work" ] && [ -d "$work" ] || {
+    echo "no temporary folder could be made"
+    exit 1
+}
 export BB_CONFIG="$work/main"
 bb="$bin/bb"
 fails=0
@@ -48,18 +52,18 @@ check() { # description, expected, got
     fi
 }
 wait_for() { # seconds, command...
-    tries=$(($1 * 5))
+    # by the clock: on a busy machine every look takes its time, too
+    end=$(($(date +%s) + $1))
     shift
-    while [ "$tries" -gt 0 ]; do
+    while :; do
         got=$("$@" 2>/dev/null)
         if [ -n "$got" ]; then
             printf '%s' "$got"
             return 0
         fi
+        [ "$(date +%s)" -ge "$end" ] && return 1
         sleep 0.2
-        tries=$((tries - 1))
     done
-    return 1
 }
 die() {
     echo "FAIL  $1"
@@ -67,6 +71,14 @@ die() {
     exit 1
 }
 key_in() { grep "bb setup" "$1" 2>/dev/null | head -1 | awk '{print $4}'; }
+# What a job prints -- nothing when no worker ran it within two minutes.  (A job without a
+# worker waits for one for as long as it takes; this test must not.)
+says() { # the shell command
+    said=$("$bb" run -d --json --no-sync --sh "$1" 2>/dev/null | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+    [ -n "$said" ] || return 0
+    "$bb" wait "$said" --timeout 2m >/dev/null 2>&1 || "$bb" cancel "$said" >/dev/null 2>&1
+    "$bb" logs "$said" 2>/dev/null
+}
 online() { "$bb" workers --json | grep '"online": true'; }
 
 # --- a relay first started by hand, as this user, then installed as a service with sudo
@@ -102,10 +114,24 @@ check "bb-worker service install" 0 $?
 check "the worker's service runs as the one who installed it" "User=$me" "$(grep '^User=' /etc/systemd/system/buildbalancer-worker.service)"
 wait_for 40 online >/dev/null || die "the worker's service did not come online" "$work/worker.out"
 mkdir -p "$work/proj" && cd "$work/proj" || exit 1
-check "jobs run as that user, not as root" "$me" "$("$bb" run -q --no-sync --sh 'id -un' 2>/dev/null)"
-check "... with that user's own tools on the PATH" 1 "$("$bb" run -q --no-sync --sh 'echo "$PATH"' 2>/dev/null | grep -c "$HOME/.cargo/bin")"
+check "jobs run as that user, not as root" "$me" "$(says 'id -un')"
+check "... with that user's own tools on the PATH" 1 "$(says 'echo "$PATH"' | grep -c "$HOME/.cargo/bin")"
 check "... in that user's data folder" 1 "$(ls -d "$own/worker/ws" 2>/dev/null | wc -l | tr -d ' ')"
 cd "$work" || exit 1
+
+# --- an update never stops the service: the worker sees that another file took its program's
+# place (here a copy of itself), ends with an error once no job runs, and systemd starts it
+starts() {
+    n=$(grep -c "version .* started" "$own/worker/logs/worker.log" 2>/dev/null)
+    echo "${n:-0}"
+}
+# (counted from here: a start before this one says nothing about the replacing)
+before=$(starts)
+started_again() { [ "$(starts)" -gt "$before" ] && echo yes; }
+cp "$bin/bb-worker" "$bin/bb-worker.next" && mv "$bin/bb-worker.next" "$bin/bb-worker"
+check "the worker's service starts again by itself when its program is replaced" yes "$(wait_for 60 started_again)"
+wait_for 40 online >/dev/null
+check "... and runs jobs again" "$me" "$(cd "$work/proj" && says 'id -un')"
 
 sudo "$bin/bb-worker" service uninstall >/dev/null
 check "bb-worker service uninstall" 0 $?

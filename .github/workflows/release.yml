@@ -1,7 +1,8 @@
 # The programs of a version, ready to fetch: pushing a tag like v0.1.0 builds them for Windows,
 # Linux and macOS, runs the smoke test on what was built, and publishes a release with one
-# archive per system, SHA256SUMS and the install scripts (install.sh, install.ps1 -- they fetch
-# from "the latest release", so a release is what makes the one-line install work).
+# archive per system, SHA256SUMS, VERSION and the install scripts (install.sh, install.ps1 --
+# they fetch from "the latest release", so a release is what makes the one-line install work;
+# VERSION is what the programs read when they look for a newer version of themselves).
 #
 # Started by hand (workflow_dispatch) it builds and tests the same archives and keeps them as
 # artifacts of the run, without publishing anything.
@@ -35,6 +36,16 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      # the programs say their version themselves: a tag that names another one would make
+      # every machine offer this release as an update for ever
+      - name: The tag is the version the programs have
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          grep -q "^version = \"${GITHUB_REF_NAME#v}\"\$" Cargo.toml || {
+            echo "the tag $GITHUB_REF_NAME does not match the version in Cargo.toml:"
+            grep -n '^version' Cargo.toml
+            exit 1
+          }
       - name: Rust
         run: |
           rustup toolchain install stable --profile minimal --target ${{ matrix.target }} --no-self-update
@@ -82,6 +93,7 @@ jobs:
           cd assets
           sha256sum buildbalancer-* > SHA256SUMS
           cat SHA256SUMS
+          echo "${GITHUB_REF_NAME#v}" > VERSION
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -201,6 +201,17 @@ pub fn init_project(dir: &str, name: Option<&str>) -> Result<(Project, bool), St
     Project::load(dir).map(|p| (p, true))
 }
 
+/// Ask a worker to bring its programs up to the newest release.  It fetches and checks the
+/// release itself, waits until it has no job, and starts again; a worker that is offline
+/// does it when it is back.  (Workers older than 0.1.2 do not know the order and ignore it.)
+pub fn ask_update(ctx: &Ctx, worker: &PairedWorker) -> Result<(), String> {
+    let key = ctx.pair_key(worker).ok_or("the worker's key is damaged")?;
+    let inbox = proto::inbox(&worker.id);
+    let order = proto::order(proto::ORDER_UPDATE, j::obj([("version", j::s(bb_core::VERSION))]));
+    ctx.relay.ch_append(&inbox, &crypt::seal(&key, &crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes()))?;
+    Ok(())
+}
+
 /// ask a worker to remove a project's files (`slot` "": all of its copies, and its jobs' folders)
 pub fn clean(ctx: &Ctx, worker: &PairedWorker, project_id: &str, slot: &str) -> Result<(), String> {
     let key = ctx.pair_key(worker).ok_or("the worker's key is damaged")?;

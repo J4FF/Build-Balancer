@@ -24,6 +24,9 @@ what every worker lends and is doing.
 - **One line per machine.** One command makes a server the relay, and every other machine
   joins with one line that the main machine shows you. Nothing to install first, and no port
   to open on your PCs.
+- **Updates itself.** The app's settings look for a newer release and install it with one
+  click; the app starts again by itself and reconnects. The main machine can have every
+  other machine do the same, without anyone walking over.
 - **Any build system.** A job is a command: `cargo build`, `make`, `python build.py`, a test
   suite. Nothing wraps your compiler.
 - **Incremental.** A worker keeps its copy of the project (and so its own build cache)
@@ -163,6 +166,40 @@ terminal is open: good for trying it out. Installing the service later keeps the
 folder and the same setup line, whoever started it first.
 
 </details>
+
+## Updating
+
+![The settings: the installed version, a newer one, and the one click that installs it](docs/img/settings.png)
+
+**In the app:** open **Settings**. It shows the installed version and looks for a newer
+release (at start, and with **Check for updates**). **Update now** fetches it, checks it
+against the release's checksums and puts it in the programs' place; the app then starts
+again by itself, and the worker in it lends and reconnects as before. Jobs that run on the
+machine are waited for first; jobs that arrive meanwhile wait and run after the restart.
+
+**The other machines, from the main machine:** under **Machines** every machine shows its
+version, and **Install update** next to an older one has that machine fetch the new release
+itself and start again when no job runs there -- whether the worker runs in the app, in a
+terminal or as a service on Linux. From a terminal: `bb update --workers`. A machine that
+still runs 0.1.0 or 0.1.1 is named instead of asked: it needs the install line once more.
+
+**In a terminal:**
+
+```sh
+bb update                 # this machine's programs (bb update --check only looks)
+bb update --all           # this machine, and the word to every worker to do the same
+bb-worker update          # on a worker: the programs, and the worker that runs starts again
+sudo bb-relay update      # on the server: the programs, and the service starts again
+```
+
+Every way does the same thing: it asks the project's releases on GitHub for the newest
+version, fetches the archive for this system over https, checks it against the release's
+`SHA256SUMS`, and replaces the four programs in the folder the running one lies in -- all
+four or none: an update that is cut short is taken back by the next program that starts. A
+worker that is running while its programs are replaced, by whichever way, sees it and
+starts again by itself as soon as no job runs; no update stops a job. Versions before 0.1.2
+cannot do this yet: bring them up to date once more with the install line of the setup
+above.
 
 ## The desktop app
 
@@ -384,6 +421,7 @@ The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Lin
 | --- | --- |
 | `tools/smoke.sh [FOLDER]` | a whole fleet on one machine in about a minute: relay, main machine, worker, jobs, cleaning up, restarts |
 | `tools/install-test.sh FOLDER` | packs a release on the spot and lets `install.sh` / `install.ps1` fetch, check and install it into a temporary folder |
+| `tools/update-test.sh FOLDER` | a "newer release" made on the spot: `bb update` installs it, a worker asked by the main machine fetches it and starts again by itself, a job that runs meanwhile runs to its end, an update that was cut short is taken back, a download that does not match its checksum changes nothing |
 | `tools/service-test.sh FOLDER` | installs the relay and the worker as services for real (Linux only; for a CI runner or a throwaway machine, as it needs root and removes Build Balancer's data folders) |
 | `BuildBalancer --demo --script gui/tests/demo.uis` | walks through the app's pages without a display (its pictures go to `target/shots/`, which has to exist) |
 
@@ -391,7 +429,8 @@ The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Lin
 | --- | --- |
 | `crates/bb_core` | protocol records, end-to-end encryption, pairing, the relay client |
 | `crates/bb_sync` | a folder as a tree of encrypted blobs: scan, ignore rules, upload, apply |
-| `crates/bb_exec` | processes under limits: CPU pinning, priority, memory measuring, tool detection |
+| `crates/bb_exec` | processes under limits: CPU pinning, priority, memory measuring, tool detection; the programs as services |
+| `crates/bb_update` | a newer release: found at the project's releases, fetched, checked, put in the programs' place |
 | `relay` | `bb-relay`: devices, pairing slots, channels, blob store |
 | `worker` | `bb-worker` and the library behind it (`bb_worker`): the engine with inbox, scheduler, job execution and watchdogs; pairing; cleaning up |
 | `cli` | `bb` and the library behind it (`bb_main`): the fleet, jobs, pairing; the commands, JSON output, MCP server and guide |
@@ -415,6 +454,14 @@ main machine and worker on the one runner:
 - `tools/install-test.sh`: `install.sh` (Linux, macOS) and `install.ps1` (Windows) fetch a
   release that was packed on the spot, check it and install it; a download that does not
   match its checksum is refused.
+- `tools/update-test.sh`: the programs updating themselves against a release packed on the
+  spot -- `bb update` replaces all four programs, a worker that the main machine asks to
+  update (also when the main machine itself cannot reach the releases) fetches the release
+  and starts again by itself, `bb-worker update` with a worker running, a job that runs
+  when the update is asked for (it runs to its end, one that arrives meanwhile runs after
+  the restart), a worker whose programs someone else's update replaced, an update that was
+  cut short (it is taken back at the next start; where a program is in the way, what it
+  kept stays until it can be), a download that does not match its checksum.
 - The desktop app, `gui/tests/demo.uis`: every page, the one-click removal, a pairing --
   without a display.
 - Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started
@@ -423,7 +470,9 @@ main machine and worker on the one runner:
   that person's data folder; root has to say whom jobs run as; one command sets a server up.
 
 **By hand on Windows**, the app against a real relay: pairing through the window, a job on
-the worker inside the app, the project appearing and going with one click. And a relay that
+the worker inside the app, the project appearing and going with one click. The app updating
+itself from its settings (a release packed for the test): found, installed, started again by
+itself, connected again. And asking GitHub itself for the newest version. And a relay that
 is away in the middle of a job, 20 000 lines of output, unpairing and pairing the same
 machine again.
 
@@ -441,7 +490,13 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
   0.1.0 by hand, and the smoke test passes with the programs it installed.)
 - The firewall hints: the code that reads ufw's and firewalld's state has not met a machine
   that runs one of them.
-- The services on Windows and macOS (on Linux the CI installs them).
+- The services on Windows and macOS (on Linux the CI installs them), and with them a
+  service that starts again after an update: the worker ends with an error once no job runs
+  and leaves the starting to the service manager (systemd's `Restart=on-failure`, launchd's
+  `KeepAlive`, the restart-on-failure setting of a Windows service). Only systemd has been
+  seen to do it.
+- An update from a real release on GitHub: the tests update from a release packed on the
+  spot. The first release that can be updated to is the one after 0.1.2.
 - macOS beyond the CI: nobody has looked at the app's window on a Mac, and the memory limit
   and low priority were not checked there.
 - The disk limit (making room, ending a job that grows too large), the relay's eviction of
@@ -464,6 +519,9 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
   limits work as elsewhere.
 - The worker inside the desktop app runs while its window is open; there is no tray icon
   yet. Use the service for machines that should always help.
+- Updates are installed when someone asks for them -- one click in the app, or the main
+  machine's word to its workers. Nothing updates itself unasked, and the relay is updated
+  on the server (`sudo bb-relay update`).
 - The worker's service runs as you on Linux. On Windows it runs as LocalSystem and on macOS
   as root: jobs have that account's rights there and do not see tools installed for your user
   only (rustup in your profile). On those systems the app, or `bb-worker run` in a terminal,

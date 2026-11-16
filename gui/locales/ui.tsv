@@ -197,3 +197,32 @@ Beenden, obwohl Aufträge laufen?	Quit although jobs are running?
 Auf diesem Gerät laufen gerade Aufträge. Beim Beenden werden sie abgebrochen; das Hauptgerät erfährt es.	Jobs are running on this machine right now. Quitting cancels them; the main machine is told.
 Beenden	Quit
 Weiterlaufen lassen	Keep running
+Einstellungen	Settings
+Die Version dieses Programms und neuere.	The version of this program, and newer ones.
+Version und Updates	Version and updates
+Installierte Version	Installed version
+Die neue Version wird geholt, geprüft und eingespielt …	Fetching, checking and installing the new version …
+Build Balancer startet danach von selbst neu und verbindet sich wieder.	Build Balancer then starts again by itself and reconnects.
+Hier laufen gerade Aufträge. Das Update startet, sobald sie fertig sind.	Jobs are running here. The update starts as soon as they are done.
+Es wird nach einer neueren Version gesucht …	Looking for a newer version …
+neu	new
+Version {} ist verfügbar.	Version {} is available.
+Ein Klick holt sie, prüft sie und spielt sie ein. Build Balancer startet danach von selbst neu und verbindet sich wieder.	One click fetches it, checks it and installs it. Build Balancer then starts again by itself and reconnects.
+aktuell	up to date
+Das ist die neueste Version.	This is the newest version.
+Die Suche hat nicht geklappt	The check did not work
+Jetzt aktualisieren	Update now
+Nach Updates suchen	Check for updates
+Beim Start nach Updates suchen	Check for updates when the app starts
+Neue Versionen kommen von {} und werden vor dem Einspielen gegen ihre Prüfsumme geprüft. Die Programme liegen in {}.	New versions come from {} and are checked against their checksum before they are installed. The programs are in {}.
+Die anderen Geräte	The other machines
+Unter „Geräte“ steht bei jedem Gerät seine Version. „Update einspielen“ dort lässt es die neue Version selbst holen und neu starten – ohne dass jemand hingehen muss.	“Machines” shows the version of every machine. “Install update” there has it fetch the new version itself and start again – nobody has to walk over.
+Update einspielen	Install update
+Aktualisiert	Updated
+Build Balancer läuft jetzt in Version {}.	Build Balancer now runs version {}.
+Update eingespielt	Update installed
+Build Balancer konnte sich nicht selbst neu starten: bitte schließen und wieder öffnen.	Build Balancer could not start itself again: please close it and open it again.
+Update fehlgeschlagen	The update failed
+Version {}	version {}
+{} holt die neue Version, sobald dort kein Auftrag läuft, und meldet sich danach wieder.	{} fetches the new version as soon as no job runs there, and reports back afterwards.
+kann sich noch nicht selbst aktualisieren – dort einmal die Installationszeile ausführen	cannot update itself yet – run the install line there once more

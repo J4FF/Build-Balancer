@@ -9,6 +9,8 @@
 //   bb-relay status [--data DIR]           what the data folder holds, and the setup line again
 //   bb-relay setup-key [--new] [--data DIR]   the setup key (--new: another one, for a new or
 //                                             another main machine)
+//   bb-relay update [--check]              fetch the newest release and put it in this program's
+//                                          place; the service is started again with it
 //   bb-relay service uninstall | start | stop | status
 //   bb-relay --version | --help
 //
@@ -66,6 +68,7 @@ fn usage() -> i32 {
          \x20                                          run in this terminal\n\
          bb-relay status [--data DIR]        devices, storage, and the setup line again\n\
          bb-relay setup-key [--new]          the setup key (--new: one for another main machine)\n\
+         bb-relay update [--check]           fetch the newest release; the service starts again with it\n\
          bb-relay service uninstall | start | stop | status\n\
          bb-relay --version\n\
          \n\
@@ -282,19 +285,57 @@ fn run() -> i32 {
             return 2;
         }
     };
-    if let Err(e) = cli.only(&["--listen", "--public", "--data", "--store-limit", "--keep-days", "--threads", "--plain", "--service", "--new"]) {
+    if let Err(e) = cli.only(&["--listen", "--public", "--data", "--store-limit", "--keep-days", "--threads", "--plain", "--service", "--new", "--check"]) {
         bb_core::util::err(&format!("bb-relay: {}\n", e));
         return 2;
     }
     plat::log_levels(plat::LOG_INFO, plat::LOG_INFO);
+    // what an update left behind: the files it replaced
+    bb_update::at_start();
     match cli.pos.first().map(String::as_str).unwrap_or("run") {
         "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || serve_from_args()),
         "run" => serve(&cli),
         "setup-key" => setup_key_cmd(&cli),
         "status" => status(&cli),
         "service" => service_cmd(&cli),
+        "update" => update_cmd(&cli),
         _ => usage(),
     }
+}
+
+/// bb-relay update [--check]: the newest release in this program's place, and the service
+/// started again with it.  The machines notice only that the relay was away for a moment.
+fn update_cmd(cli: &Cli) -> i32 {
+    let c = match bb_update::check() {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    if !c.newer {
+        out(&format!("bb-relay {} is the newest version.\n", c.current));
+        return 0;
+    }
+    if cli.flag("--check") {
+        out(&format!("Version {} is available (this is {}): bb-relay update\n", c.latest, c.current));
+        return 0;
+    }
+    let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
+    if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
+        return fail(&e);
+    }
+    out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
+    if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
+        // a relay that is not there is worse than an old one: each step that fails is said, and counts
+        if let Err(e) = svc::stop(SERVICE) {
+            return fail(&format!("the service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`", SERVICE, e));
+        }
+        if let Err(e) = svc::start(SERVICE) {
+            return fail(&format!("the service {} was stopped and could NOT be started again ({}): the relay is down until `bb-relay service start` works", SERVICE, e));
+        }
+        out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
+    } else {
+        out("A relay that runs in a terminal keeps the old version until it is started again.\n");
+    }
+    0
 }
 
 /// the service's entry: run_service takes a plain function

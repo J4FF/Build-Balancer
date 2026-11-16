@@ -10,7 +10,9 @@
 //
 // Pages: "This machine" (what it lends, what runs, the projects kept here with one click to
 // remove them), "Machines" (the workers of the main machine, adding one with a code), "Jobs",
-// "Project" (run a project's tasks), "Connect" (pair this machine or make it the main machine).
+// "Project" (run a project's tasks), "Connect" (pair this machine or make it the main machine),
+// "Settings" (look for a newer version, install it with one click: the app starts again by
+// itself and the worker in it reconnects).
 // Texts are German in the source and English through locales/ui.tsv, as JFLib's apps do it.
 #![no_std]
 #![no_main]
@@ -44,6 +46,7 @@ pub mod id {
     pub const PROJECT: u32 = 6000;
     pub const TASK_ROW: u32 = 6100; // + 2 per task
     pub const DIALOG: u32 = 7000;
+    pub const SETTINGS: u32 = 8000;
     pub const FILEDLG: u32 = 0x10000;
     /// the tick that refreshes what the pages show
     pub const TIMER: u32 = 1;
@@ -69,6 +72,7 @@ impl App for Gui {
             Page::Fleet => pages::fleet(self, ui),
             Page::Jobs => pages::jobs(self, ui),
             Page::Project => pages::project(self, ui),
+            Page::Settings => pages::settings(self, ui),
         }
         ui.scroll_end();
         ui.box_end();
@@ -106,12 +110,15 @@ fn nav(g: &mut Gui, ui: &mut Ui) {
     let running = g.wstatus.as_ref().map_or(0, |s| s.running.len());
     let open_jobs = g.jobs.iter().filter(|j| !bb_core::proto::is_final(&j.state)).count();
     let badge = |n: usize| if n > 0 { Some(alloc::format!("{}", n)) } else { None };
-    let items: [(Option<&str>, Page, u32, &str, Option<alloc::string::String>); 5] = [
+    // a newer version shows at the settings, wherever the person is
+    let news = g.upd_found.as_ref().filter(|c| c.newer).map(|_| alloc::string::String::from("1"));
+    let items: [(Option<&str>, Page, u32, &str, Option<alloc::string::String>); 6] = [
         (None, Page::Worker, IC_POWER, t("Dieses Gerät"), badge(running)),
         (Some(t("Hauptgerät")), Page::Fleet, IC_GRID, t("Geräte"), None),
         (None, Page::Jobs, IC_HISTORY, t("Aufträge"), badge(open_jobs)),
         (None, Page::Project, IC_FOLDER, t("Projekt"), None),
         (None, Page::Connect, IC_LINK, t("Verbinden"), None),
+        (None, Page::Settings, IC_SETTINGS, t("Einstellungen"), news),
     ];
     for (i, (section, page, icon, label, badge)) in items.iter().enumerate() {
         if *page == Page::Connect {
@@ -129,7 +136,19 @@ fn nav(g: &mut Gui, ui: &mut Ui) {
 fn run() -> i32 {
     tr::install();
     let args = base::Args(plat::args());
-    let g = Gui::new(args.value("--config"), args.value("--data"), args.flag("--demo"));
+    // Started by the app itself after an update: the window that started this one is closing.
+    // It holds the worker's data folder (and the claim to be the only window) until it is gone.
+    let updated = args.value("--after-update").and_then(|p| p.parse::<u32>().ok());
+    if let Some(pid) = updated {
+        let end = bb_core::util::tick_ms() + 20_000;
+        while bb_core::util::tick_ms() < end && bb_exec::sys::processes().iter().any(|p| p.pid == pid) {
+            plat::sleep_ms(100);
+        }
+    }
+    // what an update left behind: the files it replaced
+    bb_update::at_start();
+    let mut g = Gui::new(args.value("--config"), args.value("--data"), args.flag("--demo"));
+    g.updated = updated.is_some();
     ui::launch(&DESC.translated(), g, &style::STYLE)
 }
 

@@ -4,11 +4,12 @@ version = 4
 
 [[package]]
 name = "bb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb_core",
  "bb_exec",
  "bb_sync",
+ "bb_update",
  "jflib-agent-core",
  "jflib-agent-io",
  "jflib-base",
@@ -21,11 +22,13 @@ dependencies = [
 
 [[package]]
 name = "bb-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb",
  "bb-worker",
  "bb_core",
+ "bb_exec",
+ "bb_update",
  "jflib-base",
  "jflib-build",
  "jflib-plat",
@@ -36,10 +39,11 @@ dependencies = [
 
 [[package]]
 name = "bb-relay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb_core",
  "bb_exec",
+ "bb_update",
  "jflib-agent-core",
  "jflib-base",
  "jflib-build",
@@ -51,11 +55,12 @@ dependencies = [
 
 [[package]]
 name = "bb-worker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb_core",
  "bb_exec",
  "bb_sync",
+ "bb_update",
  "jflib-agent-core",
  "jflib-base",
  "jflib-build",
@@ -67,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "bb_core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "jflib-agent-core",
  "jflib-base",
@@ -80,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "bb_exec"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb_core",
  "jflib-agent-core",
@@ -90,13 +95,26 @@ dependencies = [
 
 [[package]]
 name = "bb_sync"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bb_core",
  "jflib-agent-core",
  "jflib-base",
  "jflib-compress",
  "jflib-crypto",
+ "jflib-plat",
+ "jflib-rt",
+]
+
+[[package]]
+name = "bb_update"
+version = "0.1.2"
+dependencies = [
+ "bb_core",
+ "jflib-archive",
+ "jflib-crypto",
+ "jflib-img-core",
+ "jflib-netio",
  "jflib-plat",
  "jflib-rt",
 ]
@@ -175,6 +193,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8dbf8160a593edaed4eac6280908a0c886419de32266422ddb880688ec8531ac"
 dependencies = [
  "jflib-agent-core",
+ "jflib-plat",
+ "jflib-rt",
+]
+
+[[package]]
+name = "jflib-archive"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50e07886e96de2c67251a1827c34d6b2fd5ac022b102f0f3eaa286ac454c4c74"
+dependencies = [
+ "jflib-img-core",
  "jflib-plat",
  "jflib-rt",
 ]

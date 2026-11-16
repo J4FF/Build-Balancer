@@ -30,6 +30,7 @@ pub enum Page {
     Fleet,
     Jobs,
     Project,
+    Settings,
 }
 
 type Outcome<T> = Option<Task<Result<T, String>>>;
@@ -38,6 +39,29 @@ pub struct Gui {
     pub demo: bool,
     pub main_dir: String,
     pub worker_dir: String,
+    /// --config and --data as this window was started with them (a restart passes them on)
+    arg_config: Option<String>,
+    arg_data: Option<String>,
+
+    // settings: a newer version
+    /// this window was started by an update of the app
+    pub updated: bool,
+    /// look for a newer version when the app starts
+    pub upd_auto: i32,
+    pub upd_check: Outcome<bb_update::Check>,
+    pub upd_found: Option<bb_update::Check>,
+    pub upd_error: String,
+    /// the update runs: fetch, check, install -> the version (None: there was none after all)
+    pub upd_install: Outcome<Option<String>>,
+    /// the update waits until the jobs on this machine are done
+    pub upd_waiting: bool,
+    /// the main machine asked for the update that runs (nobody may be at this machine: an
+    /// update that fails is tried again by itself a few times)
+    upd_ordered: bool,
+    upd_tries: u32,
+    upd_retry_at: u64,
+    /// this window could not start itself again (it said so, and does not try over and over)
+    restart_failed: bool,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -102,6 +126,19 @@ impl Gui {
             demo,
             main_dir,
             worker_dir,
+            arg_config: config.map(String::from),
+            arg_data: data.map(String::from),
+            updated: false,
+            upd_auto: 1,
+            upd_check: None,
+            upd_found: None,
+            upd_error: String::new(),
+            upd_install: None,
+            upd_waiting: false,
+            upd_ordered: false,
+            restart_failed: false,
+            upd_tries: 0,
+            upd_retry_at: 0,
             nav: NavState::default(),
             page: Page::Connect,
             ticks: 0,
@@ -168,7 +205,91 @@ impl Gui {
         if let Some(d) = prefs.get("project", "dir").filter(|d| plat::file_exists(d) == 2) {
             self.open_project(String::from(d));
         }
+        self.upd_auto = (prefs.get("update", "check") != Some("0")) as i32;
+        if self.updated {
+            ui.toast(IB_SUCCESS, t("Aktualisiert"), &tf("Build Balancer läuft jetzt in Version {}.", &[bb_core::VERSION]), 8000);
+        } else if self.upd_auto != 0 {
+            self.check_updates(ui);
+        }
         self.refresh(ui);
+    }
+
+    // ---------------------------------------------------------------- a newer version
+
+    /// look at the project's releases (in the background)
+    pub fn check_updates(&mut self, ui: &mut Ui) {
+        if self.demo {
+            self.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from("0.2.0"), newer: true });
+            return;
+        }
+        if self.upd_check.is_none() {
+            self.upd_error.clear();
+            self.upd_check = Some(ui.spawn(spawn_blocking(bb_update::check)));
+        }
+    }
+
+    pub fn set_update_auto(&mut self, on: bool) {
+        self.upd_auto = on as i32;
+        if !self.demo {
+            let path = plat::fs::join(&self.main_dir, "app.ini");
+            let mut prefs = base::Ini::load(&path);
+            prefs.set("update", "check", if on { "1" } else { "0" });
+            prefs.save(&path);
+        }
+    }
+
+    /// One click: fetch the newest release, put it in the programs' place and start the app
+    /// again.  Jobs that run here are waited for first -- an update is no reason to lose a build.
+    pub fn update_now(&mut self, ui: &mut Ui) {
+        if self.demo {
+            ui.toast(IB_INFO, t("Demo"), t("In der Demo wird nichts verändert."), 0);
+            return;
+        }
+        if self.upd_install.is_some() {
+            return;
+        }
+        // From here on no job starts on this machine (one that arrives waits, and runs after
+        // the restart); one that runs is waited for.
+        if self.engine.as_ref().is_some_and(|e| !e.hold()) {
+            self.upd_waiting = true;
+            return;
+        }
+        self.upd_waiting = false;
+        self.upd_install = Some(ui.spawn(spawn_blocking(|| bb_worker::engine::update_programs(&mut |_| {}))));
+    }
+
+    /// the update did not happen: jobs may start again
+    fn release_jobs(&self) {
+        if let Some(e) = &self.engine {
+            e.release();
+        }
+    }
+
+    /// Start the program that is in this one's place now and close this window.  The new
+    /// window waits until this one is gone, then lends again and reconnects by itself.
+    fn restart_app(&mut self, ui: &mut Ui) {
+        self.shutdown();
+        let mut args: Vec<String> = Vec::new();
+        for (name, value) in [("--config", &self.arg_config), ("--data", &self.arg_data)] {
+            if let Some(v) = value {
+                args.extend([String::from(name), v.clone()]);
+            }
+        }
+        args.extend([String::from("--after-update"), format!("{}", bb_exec::sys::own_pid())]);
+        // for tests: more arguments for the window that starts (a script, so it needs no screen)
+        if let Some(more) = plat::env("BB_RESTART_ARGS") {
+            args.extend(more.split_whitespace().map(String::from));
+        }
+        if bb_update::restart(&args) {
+            self.close_ok = true;
+            ui.quit();
+        } else {
+            ui.toast(IB_WARNING, t("Update eingespielt"), t("Build Balancer konnte sich nicht selbst neu starten: bitte schließen und wieder öffnen."), 0);
+            self.restart_failed = true;
+            if self.wcfg.is_some() {
+                self.set_lending(true);
+            }
+        }
     }
 
     pub fn go(&mut self, page: Page) {
@@ -204,6 +325,13 @@ impl Gui {
             return;
         }
         if self.engine.is_some() {
+            return;
+        }
+        if self.upd_install.is_some() {
+            // The programs are being replaced: an engine started now would not know of it,
+            // and a job it took would be cut off by the restart.  The window that starts
+            // after the update lends again.
+            self.lend = 0;
             return;
         }
         if self.winding.as_ref().is_some_and(|w| !w.sched.lock().running.is_empty()) {
@@ -465,6 +593,28 @@ impl Gui {
         if self.demo {
             return;
         }
+        // an update that waited for the jobs here, or one that was asked for from outside: the
+        // main machine's word, or `bb-worker update` that replaced the programs already
+        if self.upd_waiting {
+            self.update_now(ui);
+        }
+        let wanted = self.engine.as_ref().map_or(0, |e| e.w.restart.load(core::sync::atomic::Ordering::Relaxed));
+        if wanted == bb_worker::engine::RESTART_ONLY {
+            // the programs were replaced already -- by `bb-worker update`, `bb update`, an
+            // installer --: start again as soon as no job runs (an update of this window's
+            // own ends in a restart by itself)
+            if self.upd_install.is_none() && !self.restart_failed && self.engine.as_ref().is_some_and(|e| e.hold()) {
+                self.restart_app(ui);
+                return;
+            }
+        } else if wanted != 0 && self.upd_install.is_none() && !self.upd_waiting && bb_core::util::tick_ms() >= self.upd_retry_at {
+            // the main machine's word: taken from the engine now, and tried again from here if it fails
+            if let Some(e) = &self.engine {
+                e.w.restart.swap(0, core::sync::atomic::Ordering::Relaxed);
+            }
+            self.upd_ordered = true;
+            self.update_now(ui);
+        }
         // this machine: cheap, and the navigation shows its running jobs on every page
         if let Some(e) = &self.engine {
             self.wstatus = Some(e.status());
@@ -499,6 +649,39 @@ impl Gui {
 
     /// take what the background tasks finished
     pub fn poll_tasks(&mut self, ui: &mut Ui) {
+        if let Some(r) = done(&mut self.upd_check) {
+            match r {
+                Ok(c) => self.upd_found = Some(c),
+                Err(e) => self.upd_error = e,
+            }
+        }
+        if let Some(r) = done(&mut self.upd_install) {
+            match r {
+                Ok(Some(_)) => {
+                    self.restart_app(ui);
+                    return;
+                }
+                Ok(None) => {
+                    self.release_jobs();
+                    (self.upd_ordered, self.upd_tries) = (false, 0);
+                    self.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from(bb_core::VERSION), newer: false });
+                }
+                Err(e) => {
+                    self.release_jobs();
+                    self.upd_tries += 1;
+                    if self.upd_ordered && self.upd_tries < 4 {
+                        // asked for from afar: a download can fail, so once more in a minute
+                        self.upd_retry_at = bb_core::util::tick_ms() + 60_000;
+                        if let Some(en) = &self.engine {
+                            en.w.restart.fetch_max(bb_worker::engine::RESTART_UPDATE, core::sync::atomic::Ordering::Relaxed);
+                        }
+                    } else {
+                        (self.upd_ordered, self.upd_tries) = (false, 0);
+                        ui.toast(IB_ERROR, t("Update fehlgeschlagen"), &e, 15_000);
+                    }
+                }
+            }
+        }
         if let Some(r) = done(&mut self.connect_task) {
             match r {
                 Ok(msg) => {

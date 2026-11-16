@@ -46,19 +46,29 @@ jobs:
       # not reach the build scripts
       - name: Build
         run: cargo build --locked --workspace --target ${{ matrix.target }}
+      # (the time limits: a test that waits for what never comes ends, with its output)
       - name: A whole fleet on this machine
+        timeout-minutes: 10
         run: sh tools/smoke.sh target/${{ matrix.target }}/debug
       # a release made on the spot, fetched, checked and installed by install.sh / install.ps1
       - name: The install script
+        timeout-minutes: 10
         run: sh tools/install-test.sh target/${{ matrix.target }}/debug
+      # a "newer release" made on the spot: bb update, a worker that updates itself on the main
+      # machine's word and starts again, a download that does not match its checksum
+      - name: The programs updating themselves
+        timeout-minutes: 20
+        run: sh tools/update-test.sh target/${{ matrix.target }}/debug
       # what needs root and systemd: the services run as the person who installs them, on the
       # data folder that person already has, and a server is set up by one command
       - name: The programs as system services
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         env:
           BB_SERVICE_TEST: 1
         run: sh tools/service-test.sh target/${{ matrix.target }}/debug
       - name: The desktop app's pages
+        timeout-minutes: 5
         run: |
           mkdir -p target/shots
           target/${{ matrix.target }}/debug/BuildBalancer --demo --script gui/tests/demo.uis

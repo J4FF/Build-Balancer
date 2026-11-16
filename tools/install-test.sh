@@ -18,7 +18,11 @@ esac
 py=python3
 command -v python3 >/dev/null 2>&1 || py=python
 port=${BB_INSTALL_PORT:-7793}
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
+[ -n "$work" ] && [ -d "$work" ] || {
+    echo "no temporary folder could be made"
+    exit 1
+}
 [ "$win" = 1 ] && work=$(cygpath -m "$work") && bin=$(cygpath -m "$bin") && root=$(cygpath -m "$root")
 fails=0
 server="" server_win=""
@@ -51,10 +55,15 @@ with open(made, "rb") as f:
 with open(os.path.join(work, "release", "SHA256SUMS"), "w", newline="\n") as f:
     f.write("%s  %s\n" % (digest, os.path.basename(made)))
 EOF
-"$py" -m http.server "$port" --bind 127.0.0.1 --directory "$work/release" >/dev/null 2>&1 &
+"$py" "$root/tools/serve.py" "$port" "$work/release" >/dev/null 2>&1 &
 server=$!
-sleep 2
-[ "$win" = 1 ] && server_win=$(cat "/proc/$server/winpid" 2>/dev/null)
+[ "$win" = 1 ] && sleep 1 && server_win=$(cat "/proc/$server/winpid" 2>/dev/null)
+# (it listens at once; the wait is for a machine that is slow to start python)
+end=$(($(date +%s) + 180))
+until "$py" -c "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=3).read()" "http://127.0.0.1:$port/SHA256SUMS" >/dev/null 2>&1; do
+    [ "$(date +%s)" -ge "$end" ] && echo "the test's own web server did not come up" && exit 1
+    sleep 0.3
+done
 
 export BB_RELEASE_URL="http://127.0.0.1:$port" BB_INSTALL_DIR="$work/to" BB_NO_PATH=1
 if [ "$win" = 1 ]; then

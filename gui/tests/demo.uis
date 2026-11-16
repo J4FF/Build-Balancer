@@ -52,6 +52,13 @@ click "Das ist mein Hauptgerät"
 expect "Einrichten" exists
 shot target/shots/connect.png
 
+# the settings: a newer version and the one click that installs it
+click #25
+expect "Nach Updates suchen" exists
+expect text:"Version 0.2.0 ist verfügbar." exists
+expect "Jetzt aktualisieren" exists
+shot target/shots/settings.png
+
 # dark, and larger
 theme dark
 scale 150

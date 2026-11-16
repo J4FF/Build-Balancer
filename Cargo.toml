@@ -4,6 +4,7 @@
 #                    pairing, the relay client, sizes and ids
 #   crates/bb_sync   a project folder as a manifest of encrypted blobs: scan, upload, apply
 #   crates/bb_exec   running a job under limits: processes, CPU pinning, memory, system facts
+#   crates/bb_update a newer release: found, fetched, checked, put in the programs' place
 #   relay            bb-relay: the server in the middle, it only passes sealed data on
 #   worker           bb-worker: runs jobs on a machine that lends its power
 #   cli              bb: the main machine's command line, JSON output and MCP server
@@ -13,10 +14,10 @@
 # runtime and are one file each.  docs/ARCHITECTURE.md is the plan.
 [workspace]
 resolver = "3"
-members = ["crates/bb_core", "crates/bb_sync", "crates/bb_exec", "relay", "worker", "cli", "gui"]
+members = ["crates/bb_core", "crates/bb_sync", "crates/bb_exec", "crates/bb_update", "relay", "worker", "cli", "gui"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
@@ -37,10 +38,14 @@ agent_io = { package = "jflib-agent-io", version = "=0.2.1" }
 # the window of the desktop app: JFLib's UI and the NetLab style (the look of JFNetworker)
 ui = { package = "jflib-ui", version = "=0.2.1" }
 style = { package = "jflib-style-netlab", version = "=0.2.1" }
+# reading a release's archive when a program updates itself
+archive = { package = "jflib-archive", version = "=0.2.1" }
+img_core = { package = "jflib-img-core", version = "=0.2.1" }
 jflib-build = "=0.2.1"
 bb_core = { path = "crates/bb_core" }
 bb_sync = { path = "crates/bb_sync" }
 bb_exec = { path = "crates/bb_exec" }
+bb_update = { path = "crates/bb_update" }
 bb_worker = { package = "bb-worker", path = "worker" }
 bb_main = { package = "bb", path = "cli" }
 
