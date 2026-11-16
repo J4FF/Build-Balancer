@@ -17,6 +17,11 @@
 // A program that runs can be replaced: Linux and macOS keep the old file open under no name,
 // Windows lets a running program be renamed, so the old one is moved aside ("bb.exe.old") and
 // removed at a later start.  What runs keeps running the old version until it is started again.
+//
+// The four programs of a folder belong together.  One update at a time works in a folder (a
+// lock file says so, and the tidying of a program that starts meanwhile leaves its files
+// alone); the old programs stay within reach until all four new ones are in place, and are
+// put back when one of them cannot be -- also by tidy(), when an update was cut short.
 #![no_std]
 
 extern crate alloc;
@@ -26,6 +31,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use netio::{Client, Headers, Url};
+
+/// the first version that can update itself: older programs do not know the order to
+pub const FIRST: &str = "0.1.2";
+
+/// whether a program of this version can update itself (when asked to, or on a click)
+pub fn can_update_itself(version: &str) -> bool {
+    !newer(FIRST, version) && numbers(version).is_some()
+}
 
 /// the programs of a release
 pub const PROGRAMS: [&str; 4] = ["bb", "bb-worker", "bb-relay", "BuildBalancer"];
@@ -75,11 +88,30 @@ fn get_once(url: &str, max: usize) -> Result<(u16, Option<String>, Vec<u8>), Str
     Ok((r.status, on, r.body_bytes().to_vec()))
 }
 
+/// Whether an address may be asked.  What is fetched becomes the programs of this machine, so
+/// it travels encrypted and from a server that proved who it is: https, also at every address
+/// a server sends on to.  Plain http only at a place someone named on purpose with
+/// BB_RELEASE_URL (a mirror in the own network, the tests).
+fn allowed(url: &str) -> Result<(), String> {
+    let chosen = other_place().is_some_and(|b| b.starts_with("http://") && url.starts_with(b.as_str()));
+    if url.starts_with("https://") || chosen {
+        Ok(())
+    } else {
+        Err(format!("{} is not an https address: nothing is fetched from there", url.split('?').next().unwrap_or(url)))
+    }
+}
+
+/// one GET at an address that is allowed -> (status, where it sends on, body)
+fn get_step(url: &str, max: usize) -> Result<(u16, Option<String>, Vec<u8>), String> {
+    allowed(url)?;
+    get_once(url, max)
+}
+
 /// a GET that follows where it is sent on (a release's files lie on another server than its page)
 fn get(url: &str, max: usize) -> Result<(u16, Vec<u8>), String> {
     let mut url = String::from(url);
     for _ in 0..6 {
-        let (status, on, body) = get_once(&url, max)?;
+        let (status, on, body) = get_step(&url, max)?;
         match on {
             Some(next) if matches!(status, 301 | 302 | 303 | 307 | 308) => url = next,
             _ => return Ok((status, body)),
@@ -123,7 +155,7 @@ pub fn latest() -> Result<String, String> {
     }
     if other_place().is_none() && status == 404 {
         // a release from before VERSION was part of it: "the latest release" leads to its tag
-        let (status, on, _) = get_once(&format!("{}/releases/latest", bb_core::REPOSITORY), 8 << 20)?;
+        let (status, on, _) = get_step(&format!("{}/releases/latest", bb_core::REPOSITORY), 8 << 20)?;
         if let Some(tag) = on.as_deref().and_then(|l| l.rsplit_once("/tag/")).map(|(_, t)| t.trim_start_matches('v'))
             && numbers(tag).is_some()
         {
@@ -194,15 +226,16 @@ fn unpack(name: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     Ok(untar(&tar))
 }
 
-/// The names a program was moved aside to while a newer one took its place (Windows):
-/// "bb.exe.old", and "bb.exe.old.2" ... when a program still ran from the one before.
+/// The names the program before an update is kept under until the update is through:
+/// "bb.exe.old", and "bb.exe.old.2" ... when a program still runs from the one before
+/// (Windows, where the running file itself is what is moved aside).
 fn asides(dir: &str, file: &str) -> Vec<String> {
     let first = format!("{}.old", file);
     let more = format!("{}.old.", file);
     plat::fs::read_dir(dir).unwrap_or_default().into_iter().filter(|e| e.name == first || e.name.starts_with(&more)).map(|e| plat::fs::join(dir, &e.name)).collect()
 }
 
-/// a name to move a program aside to that is free
+/// a name to keep the program before an update under that is free
 fn aside(dir: &str, file: &str) -> String {
     let taken = asides(dir, file);
     let mut name = plat::fs::join(dir, &format!("{}.old", file));
@@ -218,19 +251,49 @@ fn fresh(dir: &str, file: &str) -> String {
     plat::fs::join(dir, &format!(".{}.new", file))
 }
 
-/// remove what an update left behind in a folder: the programs it replaced, files of one that
-/// did not finish.  A program that still runs from a replaced file keeps it until it ends.
+/// the file whose lock says: an update is at work in this folder
+fn lock_path(dir: &str) -> String {
+    plat::fs::join(dir, ".buildbalancer-update.lock")
+}
+
+/// what an update left in a folder: (program file, the programs kept from before, a new one not yet in place)
+fn leftovers(dir: &str) -> Vec<(String, Vec<String>, Option<String>)> {
+    PROGRAMS
+        .iter()
+        .map(|p| {
+            let file = file_name(p);
+            let new = Some(fresh(dir, &file)).filter(|n| plat::file_exists(n) != 0);
+            (file.clone(), asides(dir, &file), new)
+        })
+        .filter(|(_, old, new)| !old.is_empty() || new.is_some())
+        .collect()
+}
+
+/// Clear away what an update left behind in a folder: the programs it replaced (a program
+/// that still runs from one keeps it until it ends), files of an update that did not finish.
+/// A program that an update cut short took out of its place is put back.  While an update is
+/// at work in the folder, nothing is touched.
 pub fn tidy(dir: &str) {
-    for p in PROGRAMS {
-        let file = file_name(p);
-        let mut leftovers = asides(dir, &file);
-        leftovers.push(fresh(dir, &file));
-        for path in leftovers {
-            if plat::file_exists(&path) != 0 {
-                plat::delete(&path);
-            }
+    let left = leftovers(dir);
+    if left.is_empty() {
+        return;
+    }
+    // (a folder this user may not write to: there is nothing to do here either way)
+    let Some(lock) = plat::FileLock::acquire(&lock_path(dir)) else { return };
+    for (file, mut old, new) in left {
+        let target = plat::fs::join(dir, &file);
+        // an update that ended between moving the program aside and putting the new one there
+        if plat::file_exists(&target) == 0
+            && let Some(last) = old.pop()
+        {
+            plat::rename(&last, &target);
+        }
+        for path in old.into_iter().chain(new) {
+            plat::delete(&path);
         }
     }
+    drop(lock);
+    plat::delete(&lock_path(dir));
 }
 
 /// Put the programs of release `version` into `dir` -> the programs that were put there.
@@ -280,7 +343,8 @@ pub fn install(version: &str, dir: &str, say: &mut dyn FnMut(&str)) -> Result<Ve
     Ok(programs.into_iter().map(|(f, _)| f).collect())
 }
 
-/// write the new programs beside the old ones, then let them take their places
+/// Write the new programs beside the old ones, then let them take their places.  The old
+/// ones stay within reach until all are in place: if one cannot be, all go back.
 fn put(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
     let denied = |what: &str| {
         format!(
@@ -291,39 +355,82 @@ fn put(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
         )
     };
     tidy(dir);
+    let Some(lock) = plat::FileLock::acquire(&lock_path(dir)) else {
+        // no lock: another update works here right now, or the folder is not this user's
+        return Err(if plat::file_exists(&lock_path(dir)) != 0 { format!("another update is at work in {}: try again in a moment", dir) } else { denied("the programs") });
+    };
+    let result = replace(dir, programs).map_err(|file| denied(&file));
+    // what is left over now is this update's own: new files that did not get into place
+    for (file, _) in programs {
+        plat::delete(&fresh(dir, file));
+    }
+    drop(lock);
+    plat::delete(&lock_path(dir));
+    result
+}
+
+/// the replacing itself, under the folder's lock -> Err(the program that could not be replaced)
+fn replace(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
     for (file, content) in programs {
         let new = fresh(dir, file);
         if !plat::write_file(&new, content) || (!cfg!(windows) && !plat::fs::set_mode(&new, 0o755)) {
-            tidy(dir);
-            return Err(denied(file));
+            return Err(file.clone());
         }
     }
-    // (the program, where the one before it went)
-    let mut moved: Vec<(&String, Option<String>)> = Vec::new();
-    let undo = |moved: &[(&String, Option<String>)]| {
-        // back to what was there: the programs of one folder belong together
-        for (file, old) in moved.iter().rev() {
+    // (the program, where the one before it is kept)
+    let mut done: Vec<(&String, Option<String>)> = Vec::new();
+    let undo = |done: &[(&String, Option<String>)]| {
+        for (file, old) in done.iter().rev() {
             let target = plat::fs::join(dir, file);
-            if let Some(old) = old {
-                plat::delete(&target);
-                plat::rename(old, &target);
+            match old {
+                // back to what was there
+                Some(old) => {
+                    if cfg!(windows) {
+                        plat::delete(&target);
+                    }
+                    plat::rename(old, &target);
+                }
+                // there was none before: none stays
+                None => {
+                    plat::delete(&target);
+                }
             }
         }
     };
     for (file, _) in programs {
         let (target, new) = (plat::fs::join(dir, file), fresh(dir, file));
-        // Windows: a program that runs cannot be written over, but it can be moved aside
-        let old = (cfg!(windows) && plat::file_exists(&target) != 0).then(|| aside(dir, file));
-        let ok = old.as_ref().is_none_or(|o| plat::rename(&target, o));
-        if !ok || !plat::rename(&new, &target) {
-            if ok {
-                moved.push((file, old));
-            }
-            undo(&moved);
-            tidy(dir);
-            return Err(denied(file));
+        let old = (plat::file_exists(&target) != 0).then(|| aside(dir, file));
+        // Windows: a program that runs cannot be written over, but it can be moved aside.
+        // Elsewhere the old program gets a second name and the new one then takes the first:
+        // a program that runs must keep its name, or it could not find the new one to start.
+        let kept = match &old {
+            None => true,
+            Some(o) if cfg!(windows) => plat::rename(&target, o),
+            Some(o) => plat::fs::hard_link(&target, o) || plat::read_file(&target).is_some_and(|b| plat::write_file(o, &b)),
+        };
+        if !kept {
+            undo(&done);
+            return Err(file.clone());
         }
-        moved.push((file, old));
+        if !plat::rename(&new, &target) {
+            if cfg!(windows)
+                && let Some(o) = &old
+            {
+                plat::rename(o, &target);
+            }
+            undo(&done);
+            return Err(file.clone());
+        }
+        done.push((file, old));
+    }
+    // All are in place.  Where the old programs are only second names (not the files that
+    // run), they can go now; on Windows they go at a later start.
+    if !cfg!(windows) {
+        for (_, old) in done {
+            if let Some(o) = old {
+                plat::delete(&o);
+            }
+        }
     }
     Ok(())
 }

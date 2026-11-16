@@ -248,13 +248,16 @@ fn update(args: &[String]) -> CmdResult {
     let cli = parse(args, &["--worker"], &["--check", "--workers", "--all"], &[("-w", "--worker")], false)?;
     let (one, every) = (cli.value("--worker"), cli.flag("--workers") || cli.flag("--all"));
     let own = cli.flag("--all") || (one.is_none() && !every);
-    let c = bb_update::check()?;
     let mut text = String::new();
-    let mut doc = j::obj([("current", j::s(&c.current)), ("latest", j::s(&c.latest)), ("newer", Value::Bool(c.newer))]);
-    if cli.flag("--check") {
-        text += &if c.newer { format!("Version {} is available (this is {}): bb update\n", c.latest, c.current) } else { format!("bb {} is the newest version.\n", c.current) };
-    } else if own {
-        if c.newer {
+    let mut doc = j::obj([]);
+    // The releases are asked only for this machine's own programs: the word to a worker needs
+    // no way to GitHub from here -- the worker looks for itself.
+    if cli.flag("--check") || own {
+        let c = bb_update::check()?;
+        doc = j::obj([("current", j::s(&c.current)), ("latest", j::s(&c.latest)), ("newer", Value::Bool(c.newer))]);
+        if cli.flag("--check") {
+            text += &if c.newer { format!("Version {} is available (this is {}): bb update\n", c.latest, c.current) } else { format!("bb {} is the newest version.\n", c.current) };
+        } else if c.newer {
             let dir = bb_update::own_dir().ok_or("the program's own folder is unknown")?;
             bb_update::install(&c.latest, &dir, &mut |m| err(&format!("{} ...\n", m)))?;
             text += &format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\nThe app and a worker that run on this machine use it once they are started again: the app\ndoes that itself from its settings, `bb-worker update` asks a running worker to.\n", c.latest, dir);
@@ -269,16 +272,30 @@ fn update(args: &[String]) -> CmdResult {
             Some(w) => alloc::vec![ctx.worker(w)?],
             None => ctx.workers.iter().collect(),
         };
+        // a worker that is too old for the order would take it and do nothing: say so instead
+        let views = fleet::fleet(&ctx).unwrap_or_default();
+        let version = |w: &conf::PairedWorker| views.iter().find(|v| v.paired.id == w.id).and_then(|v| v.status.as_ref()).map(|s| s.version.clone()).unwrap_or_default();
+        let (mut names, mut old): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
         for w in &asked {
+            let v = version(w);
+            if !v.is_empty() && !bb_update::can_update_itself(&v) {
+                old.push(format!("{} ({})", w.name, v));
+                continue;
+            }
             ops::ask_update(&ctx, w)?;
+            names.push(w.name.as_str());
         }
-        let names: Vec<&str> = asked.iter().map(|w| w.name.as_str()).collect();
-        if names.is_empty() {
+        if asked.is_empty() {
             text += "No worker is paired.\n";
-        } else {
-            text += &format!("Asked {} to fetch the newest version: each does it when it has no job, starts again and\nreports back (`bb workers` shows the version; one that is offline does it when it is back).\n", names.join(", "));
+        }
+        if !names.is_empty() {
+            text += &format!("Asked {} to fetch the newest version: each does it when no job runs there, starts again and\nreports back (`bb workers` shows the version; one that is offline does it when it is back).\n", names.join(", "));
+        }
+        if !old.is_empty() {
+            text += &format!("Not asked: {}.  Versions before {} cannot update themselves yet: run the install line on those\nmachines once more ({}#set-it-up-in-three-steps).\n", old.join(", "), bb_update::FIRST, bb_core::REPOSITORY);
         }
         doc.insert("asked", j::strs(&names));
+        doc.insert("too_old", j::strs(&old));
     }
     Ok(Reply::ok(text, doc))
 }

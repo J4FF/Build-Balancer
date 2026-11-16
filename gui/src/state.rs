@@ -55,6 +55,11 @@ pub struct Gui {
     pub upd_install: Outcome<Option<String>>,
     /// the update waits until the jobs on this machine are done
     pub upd_waiting: bool,
+    /// the main machine asked for the update that runs (nobody may be at this machine: an
+    /// update that fails is tried again by itself a few times)
+    upd_ordered: bool,
+    upd_tries: u32,
+    upd_retry_at: u64,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -128,6 +133,9 @@ impl Gui {
             upd_error: String::new(),
             upd_install: None,
             upd_waiting: false,
+            upd_ordered: false,
+            upd_tries: 0,
+            upd_retry_at: 0,
             nav: NavState::default(),
             page: Page::Connect,
             ticks: 0,
@@ -227,11 +235,6 @@ impl Gui {
         }
     }
 
-    /// whether a job runs or waits on this machine
-    fn busy_here(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| !e.idle())
-    }
-
     /// One click: fetch the newest release, put it in the programs' place and start the app
     /// again.  Jobs that run here are waited for first -- an update is no reason to lose a build.
     pub fn update_now(&mut self, ui: &mut Ui) {
@@ -242,12 +245,21 @@ impl Gui {
         if self.upd_install.is_some() {
             return;
         }
-        if self.busy_here() {
+        // From here on no job starts on this machine (one that arrives waits, and runs after
+        // the restart); one that runs is waited for.
+        if self.engine.as_ref().is_some_and(|e| !e.hold()) {
             self.upd_waiting = true;
             return;
         }
         self.upd_waiting = false;
         self.upd_install = Some(ui.spawn(spawn_blocking(|| bb_worker::engine::update_programs(&mut |_| {}))));
+    }
+
+    /// the update did not happen: jobs may start again
+    fn release_jobs(&self) {
+        if let Some(e) = &self.engine {
+            e.release();
+        }
     }
 
     /// Start the program that is in this one's place now and close this window.  The new
@@ -572,14 +584,22 @@ impl Gui {
         }
         // an update that waited for the jobs here, or one that was asked for from outside: the
         // main machine's word, or `bb-worker update` that replaced the programs already
-        if self.upd_waiting && !self.busy_here() {
+        if self.upd_waiting {
             self.update_now(ui);
         }
-        let wanted = self.engine.as_ref().filter(|e| e.idle()).map_or(0, |e| e.w.restart.swap(0, core::sync::atomic::Ordering::Relaxed));
+        let wanted = self.engine.as_ref().map_or(0, |e| e.w.restart.load(core::sync::atomic::Ordering::Relaxed));
         if wanted == bb_worker::engine::RESTART_ONLY {
-            self.restart_app(ui);
-            return;
-        } else if wanted != 0 {
+            // the programs were replaced already: start again as soon as no job runs
+            if self.engine.as_ref().is_some_and(|e| e.hold()) {
+                self.restart_app(ui);
+                return;
+            }
+        } else if wanted != 0 && self.upd_install.is_none() && !self.upd_waiting && bb_core::util::tick_ms() >= self.upd_retry_at {
+            // the main machine's word: taken from the engine now, and tried again from here if it fails
+            if let Some(e) = &self.engine {
+                e.w.restart.swap(0, core::sync::atomic::Ordering::Relaxed);
+            }
+            self.upd_ordered = true;
             self.update_now(ui);
         }
         // this machine: cheap, and the navigation shows its running jobs on every page
@@ -629,10 +649,23 @@ impl Gui {
                     return;
                 }
                 Ok(None) => {
+                    self.release_jobs();
+                    (self.upd_ordered, self.upd_tries) = (false, 0);
                     self.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from(bb_core::VERSION), newer: false });
                 }
                 Err(e) => {
-                    ui.toast(IB_ERROR, t("Update fehlgeschlagen"), &e, 15_000);
+                    self.release_jobs();
+                    self.upd_tries += 1;
+                    if self.upd_ordered && self.upd_tries < 4 {
+                        // asked for from afar: a download can fail, so once more in a minute
+                        self.upd_retry_at = bb_core::util::tick_ms() + 60_000;
+                        if let Some(en) = &self.engine {
+                            en.w.restart.fetch_max(bb_worker::engine::RESTART_UPDATE, core::sync::atomic::Ordering::Relaxed);
+                        }
+                    } else {
+                        (self.upd_ordered, self.upd_tries) = (false, 0);
+                        ui.toast(IB_ERROR, t("Update fehlgeschlagen"), &e, 15_000);
+                    }
                 }
             }
         }

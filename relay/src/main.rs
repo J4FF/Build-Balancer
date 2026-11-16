@@ -326,10 +326,14 @@ fn update_cmd(cli: &Cli) -> i32 {
     }
     out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
     if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
-        match svc::stop(SERVICE).and_then(|_| svc::start(SERVICE)) {
-            Ok(()) => out(&format!("The service {} was started again and runs the new version.\n", SERVICE)),
-            Err(e) => out(&format!("The service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`.\n", SERVICE, e)),
+        // a relay that is not there is worse than an old one: each step that fails is said, and counts
+        if let Err(e) = svc::stop(SERVICE) {
+            return fail(&format!("the service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`", SERVICE, e));
         }
+        if let Err(e) = svc::start(SERVICE) {
+            return fail(&format!("the service {} was stopped and could NOT be started again ({}): the relay is down until `bb-relay service start` works", SERVICE, e));
+        }
+        out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
     } else {
         out("A relay that runs in a terminal keeps the old version until it is started again.\n");
     }

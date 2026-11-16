@@ -177,33 +177,38 @@ fn update_cmd(cli: &Cli, dir: &str) -> i32 {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
-    if !c.newer {
-        out(&format!("bb-worker {} is the newest version.\n", c.current));
-        return 0;
-    }
     if cli.flag("--check") {
-        out(&format!("Version {} is available (this is {}): bb-worker update\n", c.latest, c.current));
+        out(&if c.newer { format!("Version {} is available (this is {}): bb-worker update\n", c.latest, c.current) } else { format!("bb-worker {} is the newest version.\n", c.current) });
         return 0;
     }
-    let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
-    if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
-        return fail(&e);
+    if c.newer {
+        let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
+        if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
+            return fail(&e);
+        }
+        out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
+    } else {
+        out(&format!("bb-worker {} is the newest version.\n", c.current));
     }
-    out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
-    // whoever lends on this data folder right now -- `bb-worker run`, the service, the app --
-    // holds its lock and starts again by itself when it is asked to
+    // Whoever lends on this data folder right now -- `bb-worker run`, the service, the app --
+    // holds its lock and may still run an older program: the files could have been replaced
+    // by `bb update` or the app before.  It is asked to start again -- at once when this call
+    // replaced the programs, else only if it is older than what is there.
     if config::load(dir).is_some() && plat::FileLock::acquire(&plat::fs::join(dir, "worker.lock")).is_none() {
-        if bb_core::util::put_file(&engine::restart_request(dir), b"1") {
-            out("The worker that runs here starts again with the new version as soon as it has no job.\n");
-        } else {
-            out("A worker runs here with the old version: start it again (the app, the service, or bb-worker run).\n");
+        let word = if c.newer { String::from("now") } else { String::from(bb_core::VERSION) };
+        if !bb_core::util::put_file(&engine::restart_request(dir), word.as_bytes()) {
+            return fail("the worker that runs here could not be asked to start again: start it again yourself (the app, the service, or bb-worker run)");
         }
-    } else if svc::installed(SERVICE) && plat::service::state(SERVICE) == plat::service::ServiceState::Running {
+        out(if c.newer { "The worker that runs here starts again with the new version as soon as no job runs.\n" } else { "A worker that still runs an older version here starts again as soon as no job runs.\n" });
+    } else if c.newer && svc::installed(SERVICE) && plat::service::state(SERVICE) == plat::service::ServiceState::Running {
         // the service of another data folder (another user's): with the rights for it, start it again
-        match svc::stop(SERVICE).and_then(|_| svc::start(SERVICE)) {
-            Ok(()) => out(&format!("The service {} was started again and runs the new version.\n", SERVICE)),
-            Err(_) => out(&format!("The service {} still runs the old version: `bb-worker service stop`, then `bb-worker service start`.\n", SERVICE)),
+        if let Err(e) = svc::stop(SERVICE) {
+            return fail(&format!("the service {} still runs the old version ({}): `bb-worker service stop`, then `bb-worker service start`", SERVICE, e));
         }
+        if let Err(e) = svc::start(SERVICE) {
+            return fail(&format!("the service {} was stopped and could not be started again ({}): `bb-worker service start`", SERVICE, e));
+        }
+        out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
     }
     0
 }

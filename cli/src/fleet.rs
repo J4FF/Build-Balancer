@@ -255,7 +255,13 @@ pub fn table(views: &[WorkerView]) -> String {
             out += &format!("\n{}: {}\n", v.paired.name, h);
         }
         if let Some(s) = v.status.as_ref().filter(|s| older(&s.version)) {
-            out += &format!("\n{}: runs version {} (this machine: {}).  `bb update -w {}` has it fetch the newest release and start again.\n", v.paired.name, s.version, bb_core::VERSION, v.paired.name);
+            let how = if bb_update::can_update_itself(&s.version) {
+                format!("`bb update -w {}` has it fetch the newest release and start again.", v.paired.name)
+            } else {
+                // it would take the order and do nothing: only from this version on a program knows it
+                format!("It cannot update itself yet (that came with {}): run the install line there once more ({}#set-it-up-in-three-steps).", bb_update::FIRST, bb_core::REPOSITORY)
+            };
+            out += &format!("\n{}: runs version {} (this machine: {}).  {}\n", v.paired.name, s.version, bb_core::VERSION, how);
         }
     }
     out

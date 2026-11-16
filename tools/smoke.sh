@@ -21,7 +21,11 @@ bin=$(cd "$bin" 2>/dev/null && pwd) || {
 }
 export MSYS_NO_PATHCONV=1
 port=${BB_SMOKE_PORT:-7791}
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
+[ -n "$work" ] && [ -d "$work" ] || {
+    echo "no temporary folder could be made"
+    exit 1
+}
 [ "$win" = 1 ] && work=$(cygpath -m "$work")
 export BB_CONFIG="$work/main"
 bb="$bin/bb$ext"

@@ -448,7 +448,10 @@ fn worker_card(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView) {
     if let Some(s) = v.status.as_ref().filter(|s| !s.version.is_empty()) {
         ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
         ui.text(TS_CAPTION | TX_SECONDARY, &tf("Version {}", &[&s.version]));
-        if bb_update::newer(bb_core::VERSION, &s.version) {
+        if bb_update::newer(bb_core::VERSION, &s.version) && !bb_update::can_update_itself(&s.version) {
+            // it would take the word and do nothing: only from 0.1.2 on a program knows it
+            ui.text(TS_CAPTION | TX_SECONDARY, t("kann sich noch nicht selbst aktualisieren – dort einmal die Installationszeile ausführen"));
+        } else if bb_update::newer(bb_core::VERSION, &s.version) {
             ui.next_flags(ST_COMPACT);
             ui.next_icon(IC_DOWNLOAD);
             if ui.button(base + 41, t("Update einspielen")) & EV_ACT != 0 {

@@ -27,7 +27,11 @@ if [ -e "$own" ] || sudo test -e "$system" || [ -e /etc/systemd/system/buildbala
     exit 2
 fi
 port=${BB_SERVICE_PORT:-7792}
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
+[ -n "$work" ] && [ -d "$work" ] || {
+    echo "no temporary folder could be made"
+    exit 1
+}
 export BB_CONFIG="$work/main"
 bb="$bin/bb"
 fails=0

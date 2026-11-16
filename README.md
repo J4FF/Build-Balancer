@@ -175,12 +175,13 @@ folder and the same setup line, whoever started it first.
 release (at start, and with **Check for updates**). **Update now** fetches it, checks it
 against the release's checksums and puts it in the programs' place; the app then starts
 again by itself, and the worker in it lends and reconnects as before. Jobs that run on the
-machine are waited for first.
+machine are waited for first; jobs that arrive meanwhile wait and run after the restart.
 
 **The other machines, from the main machine:** under **Machines** every machine shows its
 version, and **Install update** next to an older one has that machine fetch the new release
-itself and start again when it has no job -- whether the worker runs in the app, in a
-terminal or as a service on Linux. From a terminal: `bb update --workers`.
+itself and start again when no job runs there -- whether the worker runs in the app, in a
+terminal or as a service on Linux. From a terminal: `bb update --workers`. A machine that
+still runs 0.1.0 or 0.1.1 is named instead of asked: it needs the install line once more.
 
 **In a terminal:**
 
@@ -451,9 +452,10 @@ main machine and worker on the one runner:
   release that was packed on the spot, check it and install it; a download that does not
   match its checksum is refused.
 - `tools/update-test.sh`: the programs updating themselves against a release packed on the
-  spot -- `bb update`, a worker that the main machine asks to update and that starts again
-  by itself, `bb-worker update` with a worker running, a download that does not match its
-  checksum.
+  spot -- `bb update` replaces all four programs, a worker that the main machine asks to
+  update (also when the main machine itself cannot reach the releases) fetches the release
+  and starts again by itself, `bb-worker update` with a worker running, a download that
+  does not match its checksum.
 - The desktop app, `gui/tests/demo.uis`: every page, the one-click removal, a pairing --
   without a display.
 - Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started

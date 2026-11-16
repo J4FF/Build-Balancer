@@ -95,30 +95,47 @@ sends a worker:
 
 1. **Which version is the newest:** `REPOSITORY/releases/latest/download/VERSION` (a release
    from before that file existed is found through the address "the latest release" leads
-   to). https, checked against the system's certificate authorities.
+   to).
 2. **Fetch:** `SHA256SUMS` and the archive of this system from
    `REPOSITORY/releases/download/vVERSION/`. An archive that does not match its checksum is
-   dropped and nothing changes.
-3. **Replace** the four programs in the folder the running program lies in. The new files
-   are written beside the old ones first, then take their places: on Linux and macOS by a
-   rename (a program that runs keeps its old file), on Windows by moving the old file aside
-   (`bb.exe.old`; a running program can be renamed, not overwritten) -- those files go at a
-   later start.
+   dropped and nothing changes. Every request is https, checked against the system's
+   certificate authorities, and stays https wherever a server sends it on to; plain http
+   is taken only from a place someone named with `BB_RELEASE_URL`.
+3. **Replace** the four programs in the folder the running program lies in -- all four or
+   none. One update at a time works in a folder (the lock `.buildbalancer-update.lock`). The
+   new files are written beside the old ones, and each old program stays within reach until
+   all four new ones are in place: on Windows the old file is moved aside (`bb.exe.old`; a
+   running program can be renamed, not overwritten), elsewhere it gets a second name and the
+   new file then takes the first (a running program must keep its name, or it could not find
+   the new one to start). If one of the four cannot be put in place, the others go back.
+   What is left over -- on Windows the replaced files until the programs that run from them
+   end, anywhere the pieces of an update that was cut short -- is cleared away when a program
+   starts, which also puts a program back that such an update took out of its place; while
+   an update is at work in the folder, that tidying keeps its hands off.
 4. **Start again**, so the new version runs: the app starts the program that is in its
    place now and closes (the new window waits for the old one to be gone, then lends and
    reconnects as at every start); `bb-worker run` in a terminal does the same; as a service
    it ends with an error code, and the service manager starts it again (systemd's
-   `Restart=on-failure`). A worker does all this only while it has no job.
+   `Restart=on-failure`).
+
+A worker updates only while no job runs, and from the moment it decides to, no job starts:
+`Engine::hold` reserves that under the scheduler's lock. Jobs that arrive meanwhile are
+taken and wait -- on disk, too -- and run after the restart, or at once when the update
+did not happen. An update that fails (a download can) is tried again a few times, a minute
+apart.
 
 A worker learns that it should update in two ways: the order `update` in its inbox (sealed
-by the main machine like every order; workers before 0.1.2 do not know it and ignore it),
-or the file `restart.request` in its data folder, which `bb-worker update` writes after it
-replaced the programs. Either sets `Worker::restart`, and whoever runs the engine -- the
-app or `bb-worker run` -- acts on it.
+by the main machine like every order), or the file `restart.request` in its data folder,
+which `bb-worker update` writes -- "now" after it replaced the programs, else the version
+the programs have, so that a worker still running an older one starts again, too. Either
+sets `Worker::restart`, and whoever runs the engine -- the app or `bb-worker run` -- acts
+on it. Versions before 0.1.2 do not know the order: the main machine does not send it to
+them and says that those machines need the install line once more.
 
 The main machine cannot choose what a worker installs: the worker fetches the release of
-the project itself. `BB_RELEASE_URL` names another place with `VERSION`, `SHA256SUMS` and
-the archives side by side (a mirror; the tests).
+the project itself, and the word to a worker needs no way to the releases from the main
+machine. `BB_RELEASE_URL` names another place with `VERSION`, `SHA256SUMS` and the archives
+side by side (a mirror; the tests).
 
 ## Pairing
 

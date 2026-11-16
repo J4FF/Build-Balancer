@@ -225,3 +225,4 @@ Build Balancer konnte sich nicht selbst neu starten: bitte schließen und wieder
 Update fehlgeschlagen	The update failed
 Version {}	version {}
 {} holt die neue Version, sobald dort kein Auftrag läuft, und meldet sich danach wieder.	{} fetches the new version as soon as no job runs there, and reports back afterwards.
+kann sich noch nicht selbst aktualisieren – dort einmal die Installationszeile ausführen	cannot update itself yet – run the install line there once more

@@ -9,6 +9,7 @@
 #
 # Needs python (python3) for the archive and the little web server.
 set -u
+root=$(cd "$(dirname "$0")/.." && pwd)
 bin=$(cd "${1:?the folder with the programs}" && pwd)
 case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) os=windows arch=x86_64 ext=.exe win=1 ;;
@@ -19,8 +20,14 @@ py=python3
 command -v python3 >/dev/null 2>&1 || py=python
 web=${BB_UPDATE_PORT:-7794}
 port=${BB_UPDATE_RELAY_PORT:-7795}
-work=$(mktemp -d)
-[ "$win" = 1 ] && work=$(cygpath -m "$work") && bin=$(cygpath -m "$bin")
+work=$(mktemp -d) || exit 1
+# (everything below is cleared away by the name of this folder: without one, nothing may run)
+[ -n "$work" ] && [ -d "$work" ] || {
+    echo "no temporary folder could be made"
+    exit 1
+}
+[ "$win" = 1 ] && work=$(cygpath -m "$work") && bin=$(cygpath -m "$bin") && root=$(cygpath -m "$root")
+tag=$(basename "$work")
 export MSYS_NO_PATHCONV=1
 export BB_CONFIG="$work/main"
 export BB_RELEASE_URL="http://127.0.0.1:$web"
@@ -29,12 +36,14 @@ bb="$inst/bb$ext"
 fails=0
 
 cleanup() {
-    # everything this test started names its folder on its command line -- also the worker
-    # that started itself again, which is no child of this script any more
+    # Everything this test started names its folder on its command line -- also the worker
+    # that started itself again, which is no child of this script any more.  The folder's
+    # name is the pattern: never an empty or a short one, which would match what is not ours.
+    case "$tag" in tmp.????*) ;; *) return ;; esac
     if [ "$win" = 1 ]; then
-        powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*$(basename "$work")*' -and \$_.ProcessId -ne \$PID } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1
+        powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*$tag*' -and \$_.ProcessId -ne \$PID } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1
     else
-        pkill -9 -f "$work" 2>/dev/null
+        pkill -9 -f "$tag" 2>/dev/null
     fi
     sleep 1
     rm -rf "$work"
@@ -84,16 +93,25 @@ with open(os.path.join(work, "release", "SHA256SUMS"), "w", newline="\n") as f:
 with open(os.path.join(work, "release", "VERSION"), "w", newline="\n") as f:
     f.write("99.0.0\n")
 EOF
-"$py" -m http.server "$web" --bind 127.0.0.1 --directory "$work/release" >/dev/null 2>&1 &
-sleep 2
+"$py" "$root/tools/serve.py" "$web" "$work/release" >/dev/null 2>&1 &
+# (it listens at once; the wait is for a machine that is slow to start python)
+served() { "$py" -c "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=3).read()" "$BB_RELEASE_URL/VERSION" >/dev/null 2>&1 && echo yes; }
+wait_for 180 served >/dev/null || die "the test's own web server did not come up" /dev/null
 
 # --- this machine
 check "bb update --check sees the newer release" 1 "$("$bb" update --check 2>&1 | grep -c "Version 99.0.0 is available")"
+# (the release holds the same programs as the folder, so what shows that they were replaced
+# is that the files are new ones)
+: >"$work/before"
+sleep 2
 "$bb" update >"$work/update.out" 2>&1
 check "bb update installs it" 0 $?
 check "... and says so" 1 "$(grep -c "Version 99.0.0 is installed" "$work/update.out")"
+for p in bb bb-worker bb-relay BuildBalancer; do
+    check "$p was replaced by the release's" "new and equal" "$([ "$inst/$p$ext" -nt "$work/before" ] && cmp -s "$inst/$p$ext" "$work/pack/$p$ext" && echo "new and equal")"
+done
 check "the programs still run" 1 "$("$bb" --version 2>/dev/null | grep -c "^bb ")"
-check "nothing of the update is left lying around" 0 "$(ls -a "$inst" | grep -c '\.old$\|\.new$')"
+check "nothing of the update is left lying around" 0 "$(ls -a "$inst" | grep -c '\.old$\|\.new$\|update\.lock$')"
 
 # --- a worker that runs: the main machine asks it to update, and it starts again by itself
 "$inst/bb-relay$ext" --listen "127.0.0.1:$port" --data "$work/relay" >"$work/relay.out" 2>&1 &
@@ -111,8 +129,9 @@ restarts() { grep -c "starting again with the new programs" "$log" 2>/dev/null; 
 started() { grep -c "connected to the relay" "$log" 2>/dev/null; }
 restarted() { [ "$(restarts)" = "$1" ] && [ "$(started)" -gt "$1" ] && echo yes; }
 
-"$bb" update -w update-worker >/dev/null
-check "bb update -w asks the worker" 0 $?
+# the word to a worker needs no way to the releases from here: the worker looks for itself
+BB_RELEASE_URL="http://127.0.0.1:9" "$bb" update -w update-worker >/dev/null
+check "bb update -w asks the worker, also where the releases cannot be reached" 0 $?
 check "the worker fetches the release and starts again by itself" yes "$(wait_for 150 restarted 1)"
 wait_for 30 online >/dev/null
 check "... and is back: a job runs on it" hello "$(cd "$work" && "$bb" run -q --no-sync --sh "echo hello" 2>/dev/null | tr -d '\r')"
@@ -123,6 +142,20 @@ check "bb-worker update installs" 0 $?
 check "... and has the running worker start again" yes "$(wait_for 60 restarted 2)"
 wait_for 30 online >/dev/null
 check "... which is back as well" hello "$(cd "$work" && "$bb" run -q --no-sync --sh "echo hello" 2>/dev/null | tr -d '\r')"
+
+# --- an update cuts no job off: one that runs is waited for, one that arrives is not lost
+if [ "$win" = 1 ]; then nap='ping -n 8 127.0.0.1 >nul'; else nap='sleep 7'; fi
+job_id() { grep '"job"' | sed 's/.*: "\(.*\)".*/\1/'; }
+state_of() { "$bb" status "$1" --json | grep '"state"' | sed 's/.*: "\(.*\)".*/\1/'; }
+in_state() { [ "$(state_of "$1")" = "$2" ] && echo yes; }
+running=$(cd "$work" && "$bb" run -d --json --no-sync --sh "$nap" | job_id)
+wait_for 30 in_state "$running" running >/dev/null
+BB_RELEASE_URL="http://127.0.0.1:9" "$bb" update -w update-worker >/dev/null
+arriving=$(cd "$work" && "$bb" run -d --json --no-sync --sh "echo late" | job_id)
+(cd "$work" && "$bb" wait "$running" "$arriving" >/dev/null 2>&1)
+check "a job that runs when the update is asked for runs to its end" done "$(state_of "$running")"
+check "a job that arrives meanwhile is not lost" done "$(state_of "$arriving")"
+check "... and the worker updates and starts again once they are through" yes "$(wait_for 150 restarted 3)"
 
 # --- a download that does not match its checksum changes nothing
 before=$(cksum <"$bb")
