@@ -99,6 +99,10 @@ exec 2>&3 3>&-
 start_relay
 check "the setup key survives a restart of the relay" "$first_key" "$key"
 check "bb-relay status shows the setup line again" 1 "$("$bin/bb-relay$ext" status --data "$work/relay" | grep -c "bb setup .* $key")"
+# a key is random text: one that begins with "-" is still the key, not an option of bb
+# (64 letters, as a real key has; this one names no certificate, which is what bb then says)
+dash_key=$(printf '%s%063d' - 0 | tr 0 A)
+check "a setup key that begins with a dash is taken as the key" 1 "$("$bb" setup "127.0.0.1:$port" "$dash_key" --config "$work/nobody" 2>&1 | grep -v "unknown option" | grep -c "fingerprint")"
 "$bb" setup "127.0.0.1:$port" "$key" --name smoke-main >/dev/null
 check "setup" 0 $?
 check "a used setup key is not shown any more" 0 "$("$bin/bb-relay$ext" status --data "$work/relay" | grep -c "bb setup .* $key")"

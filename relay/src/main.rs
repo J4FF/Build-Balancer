@@ -140,9 +140,16 @@ fn stored_fingerprint(dir: &str) -> Option<[u8; 32]> {
 /// a new setup key: its hash for the relay to compare, and the key itself so it can be shown
 /// again until it is used (both only their owner can read)
 fn new_setup_key(dir: &str, fp: Option<&[u8; 32]>) -> Result<String, String> {
-    let token: [u8; 16] = plat::random_bytes();
+    // The key is typed on a command line (`bb setup RELAY KEY`): one that begins with "-" would
+    // be taken for an option there, and base64 for URLs has that letter.  One in 64 does.
+    let (token, key) = loop {
+        let token: [u8; 16] = plat::random_bytes();
+        let key = bb_core::crypt::setup_key_encode(&token, fp);
+        if !key.starts_with('-') {
+            break (token, key);
+        }
+    };
     let hash = bb_core::crypt::token_hash(&bb_core::crypt::setup_token_text(&token));
-    let key = bb_core::crypt::setup_key_encode(&token, fp);
     if !plat::fs::write_file_private(&plat::fs::join(dir, "setup.hash"), hash.as_bytes()) || !plat::fs::write_file_private(&plat::fs::join(dir, "setup.key"), key.as_bytes()) {
         return Err(format!("{} cannot be written", dir));
     }

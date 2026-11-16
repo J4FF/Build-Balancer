@@ -180,7 +180,12 @@ pub fn ctx(cli: &Cli) -> Result<Ctx, String> {
 }
 
 fn setup(args: &[String]) -> CmdResult {
-    let cli = parse(args, &["--name"], &["--force"], &[], false)?;
+    // A setup key is random text and may begin with "-" (relays before this fix made such
+    // keys): it is the key, not an option.
+    let is_key = |a: &String| a.starts_with('-') && bb_core::crypt::setup_key_decode(a).is_some();
+    let options: Vec<String> = args.iter().filter(|a| !is_key(a)).cloned().collect();
+    let mut cli = parse(&options, &["--name"], &["--force"], &[], false)?;
+    cli.pos.extend(args.iter().filter(|a| is_key(a)).cloned());
     let (Some(addr), Some(key)) = (cli.pos.first(), cli.pos.get(1)) else {
         return Err(String::from("bb setup RELAY KEY -- bb-relay prints this line when it starts (a relay that is taken already: `bb-relay setup-key` on the server)"));
     };
