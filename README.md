@@ -21,6 +21,9 @@ what every worker lends and is doing.
   `bb-worker` (machines that lend power), `bb-relay` (the one address everything can reach)
   and `BuildBalancer`, the [desktop app](#the-desktop-app) that does what `bb-worker` and
   the everyday part of `bb` do, with a window.
+- **One line per machine.** One command makes a server the relay, and every other machine
+  joins with one line that the main machine shows you. Nothing to install first, and no port
+  to open on your PCs.
 - **Any build system.** A job is a command: `cargo build`, `make`, `python build.py`, a test
   suite. Nothing wraps your compiler.
 - **Incremental.** A worker keeps its copy of the project (and so its own build cache)
@@ -56,8 +59,14 @@ and puts them on your PATH.
 | Linux, macOS | `curl -fsSL https://github.com/J4FF/Build-Balancer/releases/latest/download/install.sh \| sh` |
 | Windows (PowerShell) | `irm https://github.com/J4FF/Build-Balancer/releases/latest/download/install.ps1 \| iex` |
 
-The lines for the server and for the other machines below fetch the programs themselves.
-(No release for your system, or you would rather build: see [Building](#building).)
+The lines for the server and for the other machines below fetch the programs themselves,
+and running a line again updates them. (No release for your system, or you would rather
+build: see [Building](#building).)
+
+> **No release has been published yet.** Until the first one is out, the lines that fetch
+> the programs find nothing: build them ([Building](#building)), copy them to your machines
+> and follow "The whole setup without a window, and without the install script" at the end
+> of this section.
 
 ### 1. The relay: one command on the server
 
@@ -309,7 +318,8 @@ The point of the design: an agent on the main machine can see the fleet and deci
 
 ```sh
 bb guide                    # the workflow, written for an agent (put it into AGENTS.md / CLAUDE.md)
-bb workers --json           # online, os/arch, processors and memory lent and idle, running jobs, tools, tags
+bb workers --json           # online, os/arch, processors and memory lent and idle, running jobs, tools, tags,
+                            # and a "hint" for a machine that is not there: what to start on it
 bb run --json -w laptop --out "build/**" -- make        # -> state, exit_code, duration_ms, log_tail, outputs
 bb run -d --json ... ; bb wait JOB JOB --json           # several at once
 ```
@@ -372,11 +382,14 @@ A version is released by pushing a tag (`git tag v0.1.0 && git push origin v0.1.
 workflow `.github/workflows/release.yml` builds the programs for the three systems, runs the
 smoke test on them and publishes them with `SHA256SUMS` and the install scripts.
 
-`tools/smoke.sh [FOLDER]` runs a whole fleet on one machine in about a minute,
-`tools/install-test.sh FOLDER` lets the install script fetch a release made on the spot,
-`tools/service-test.sh FOLDER` installs the services for real (Linux, a throwaway machine), and
-`BuildBalancer --demo --script gui/tests/demo.uis` walks through the app's pages without a
-display (its pictures go to `target/shots/`, which has to exist); the CI (`.github/workflows/ci.yml`) does both on Windows, Linux and macOS.
+The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Linux and macOS:
+
+| Test | What it does |
+| --- | --- |
+| `tools/smoke.sh [FOLDER]` | a whole fleet on one machine in about a minute: relay, main machine, worker, jobs, cleaning up, restarts |
+| `tools/install-test.sh FOLDER` | packs a release on the spot and lets `install.sh` / `install.ps1` fetch, check and install it into a temporary folder |
+| `tools/service-test.sh FOLDER` | installs the relay and the worker as services for real (Linux only; for a CI runner or a throwaway machine, as it needs root and removes Build Balancer's data folders) |
+| `BuildBalancer --demo --script gui/tests/demo.uis` | walks through the app's pages without a display (its pictures go to `target/shots/`, which has to exist) |
 
 | Folder | What |
 | --- | --- |
@@ -387,6 +400,8 @@ display (its pictures go to `target/shots/`, which has to exist); the CI (`.gith
 | `worker` | `bb-worker` and the library behind it (`bb_worker`): the engine with inbox, scheduler, job execution and watchdogs; pairing; cleaning up |
 | `cli` | `bb` and the library behind it (`bb_main`): the fleet, jobs, pairing; the commands, JSON output, MCP server and guide |
 | `gui` | `BuildBalancer`: the desktop app, a window around `bb_worker` and `bb_main` (JFLib's UI in the style "netlab") |
+| `install.sh`, `install.ps1` | fetch the programs of the latest release, check them, put them on the PATH, and set the machine up if asked |
+| `tools` | the tests above, and `mkicon.py` |
 | `docs/img`, `tools/mkicon.py` | the logo (`logo.svg`), the app's icon drawn from it (`gui/res/app.ico`), and this page's pictures (`gui/tests/shots.uis` takes the screenshots) |
 
 ## What is tested
@@ -421,7 +436,7 @@ link, very large projects.
 ## Known limits and plans
 
 - One main machine per fleet works today; the relay already admits several (`bb-relay
-  setup-key`), but workers trust the one they paired with.
+  setup-key --new`), but workers trust the one they paired with.
 - Everything goes through the relay, also between machines in one network. A direct path
   when main machine and worker see each other is planned.
 - No automatic splitting of a build: Build Balancer runs the commands you (or your agent)
