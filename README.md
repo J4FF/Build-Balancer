@@ -38,8 +38,8 @@ what every worker lends and is doing.
   link no C runtime and need nothing installed.
 
 Status: version 0.1 -- it works end to end on Windows and Linux (see [What is tested](#what-is-tested)),
-it is young, and the interface may still change. macOS is new: the code is there and the CI
-builds and tests it on a Mac, but nobody has used it on one yet.
+it is young, and the interface may still change. macOS is new: the CI builds it on a Mac and
+the tests pass there, but nobody has worked with it on a Mac yet.
 
 ## Set it up in three steps
 
@@ -339,17 +339,18 @@ display (its pictures go to `target/shots/`, which has to exist); the CI (`.gith
 
 ## What is tested
 
-`tools/smoke.sh` -- on Windows 11 (x86-64) and on Ubuntu under WSL 2, each with relay, main
-machine and worker on the one machine: setup, pairing, a job with its output coming back, the
-exit code passing through, a changed file arriving, a missing program, a detached job and
-`wait`, removing a project from the main machine (`bb clean`) and on the worker (`bb-worker
-clean` through the running worker), and a worker that is killed while one job runs and another
-waits: the first is reported as interrupted, the second runs after the restart.
+`tools/smoke.sh` -- on Windows 11 (x86-64), on Ubuntu under WSL 2 and, in the CI, on macOS
+(Apple silicon), each with relay, main machine and worker on the one machine: setup, pairing,
+a job with its output coming back, the exit code passing through, a changed file arriving, a
+missing program, a detached job and `wait`, removing a project from the main machine (`bb
+clean`) and on the worker (`bb-worker clean` through the running worker), and a worker that
+is killed while one job runs and another waits: the first is reported as interrupted, the
+second runs after the restart.
 
-The desktop app: `gui/tests/demo.uis` (every page, the one-click removal, a pairing) on Windows
-and on Linux, there also without any display; and by hand on Windows against a real relay:
-pairing through the window, a job on the worker inside the app, the project appearing and
-going with one click.
+The desktop app: `gui/tests/demo.uis` (every page, the one-click removal, a pairing) on
+Windows, on Linux (there also without any display) and in the CI on macOS; and by hand on
+Windows against a real relay: pairing through the window, a job on the worker inside the
+app, the project appearing and going with one click.
 
 By hand, end to end, with an earlier state of the code (relay and main machine on Windows, a
 Windows and a Linux worker): sync (first, incremental, deletions, files of several chunks, 300
@@ -358,11 +359,12 @@ from inside the job on both systems), the memory limit (a job that allocates too
 on both systems), tasks at once in separate slots, worker choice by `needs`, the ignore rules,
 the MCP server, a relay restart while workers run.
 
-Not tested yet: **macOS on a real Mac** (it compiles for `aarch64-apple-darwin`; whether the
-CI's Mac job passes is the first real test), the system services (`service install`), the
-disk limit (making room, ending a job that grows too large), the relay's eviction of old
-blobs, the automatic removal of unused projects after days, aarch64, the app's live pages on
-Linux, a relay over the internet with a slow link, very large projects.
+Not tested yet: **macOS beyond the CI** (nobody has looked at the app's window on a Mac, and
+the memory limit and low priority were not checked there), the system services (`service
+install`), the disk limit (making room, ending a job that grows too large), the relay's
+eviction of old blobs, the automatic removal of unused projects after days, Linux and
+Windows on aarch64, the app's live pages on Linux, a relay over the internet with a slow
+link, very large projects.
 
 ## Known limits and plans
 
