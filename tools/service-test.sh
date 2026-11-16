@@ -71,6 +71,14 @@ die() {
     exit 1
 }
 key_in() { grep "bb setup" "$1" 2>/dev/null | head -1 | awk '{print $4}'; }
+# What a job prints -- nothing when no worker ran it within two minutes.  (A job without a
+# worker waits for one for as long as it takes; this test must not.)
+says() { # the shell command
+    said=$("$bb" run -d --json --no-sync --sh "$1" 2>/dev/null | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+    [ -n "$said" ] || return 0
+    "$bb" wait "$said" --timeout 2m >/dev/null 2>&1 || "$bb" cancel "$said" >/dev/null 2>&1
+    "$bb" logs "$said" 2>/dev/null
+}
 online() { "$bb" workers --json | grep '"online": true'; }
 
 # --- a relay first started by hand, as this user, then installed as a service with sudo
@@ -106,8 +114,8 @@ check "bb-worker service install" 0 $?
 check "the worker's service runs as the one who installed it" "User=$me" "$(grep '^User=' /etc/systemd/system/buildbalancer-worker.service)"
 wait_for 40 online >/dev/null || die "the worker's service did not come online" "$work/worker.out"
 mkdir -p "$work/proj" && cd "$work/proj" || exit 1
-check "jobs run as that user, not as root" "$me" "$("$bb" run -q --no-sync --sh 'id -un' 2>/dev/null)"
-check "... with that user's own tools on the PATH" 1 "$("$bb" run -q --no-sync --sh 'echo "$PATH"' 2>/dev/null | grep -c "$HOME/.cargo/bin")"
+check "jobs run as that user, not as root" "$me" "$(says 'id -un')"
+check "... with that user's own tools on the PATH" 1 "$(says 'echo "$PATH"' | grep -c "$HOME/.cargo/bin")"
 check "... in that user's data folder" 1 "$(ls -d "$own/worker/ws" 2>/dev/null | wc -l | tr -d ' ')"
 cd "$work" || exit 1
 
@@ -123,7 +131,7 @@ started_again() { [ "$(starts)" -gt "$before" ] && echo yes; }
 cp "$bin/bb-worker" "$bin/bb-worker.next" && mv "$bin/bb-worker.next" "$bin/bb-worker"
 check "the worker's service starts again by itself when its program is replaced" yes "$(wait_for 60 started_again)"
 wait_for 40 online >/dev/null
-check "... and runs jobs again" "$me" "$(cd "$work/proj" && "$bb" run -q --no-sync --sh 'id -un' 2>/dev/null)"
+check "... and runs jobs again" "$me" "$(cd "$work/proj" && says 'id -un')"
 
 sudo "$bin/bb-worker" service uninstall >/dev/null
 check "bb-worker service uninstall" 0 $?

@@ -112,7 +112,7 @@ fn run() -> i32 {
             }
             code
         }),
-        "run" => again(engine::run(&dir), &rest),
+        "run" => again(&dir, &rest),
         "update" => update_cmd(&cli, &dir),
         "config" => config_cmd(&cli, &dir),
         "status" => status_cmd(&dir),
@@ -163,18 +163,41 @@ fn joined(cli: &Cli, dir: &str, c: &config::Config) -> i32 {
     if let Some(d) = cli.value("--data") {
         args.extend([String::from("--data"), String::from(d)]);
     }
-    again(engine::run(dir), &args)
+    again(dir, &args)
 }
 
-/// a worker in a terminal that is to start again with new programs: start them, end this one
-fn again(code: i32, args: &[String]) -> i32 {
-    if code != engine::EXIT_RESTART {
-        return code;
+/// A worker in a terminal: lend until the system asks the program to stop.  When it is to
+/// start again with new programs, it starts them and ends -- once the new worker has taken
+/// the data folder over.  Nobody watches a worker in a terminal: a new one that does not come
+/// up (it could not be started, or ended at once) must not be the end of the lending.  Then
+/// this one, old as it is, works on, and tries again later.
+fn again(dir: &str, args: &[String]) -> i32 {
+    loop {
+        let code = engine::run(dir);
+        if code != engine::EXIT_RESTART {
+            return code;
+        }
+        if bb_update::restart(args) && taken_over(dir) {
+            return 0;
+        }
+        // (said where it is seen: the log file is closed between two runs)
+        bb_core::util::err("bb-worker: the new version did not start (or ended at once): this one works on and tries again in ten minutes\n");
+        engine::defer_restarts(600_000);
     }
-    if bb_update::restart(args) {
-        return 0;
+}
+
+/// whether another worker took the data folder over (holds its lock) within a few seconds
+fn taken_over(dir: &str) -> bool {
+    let lock = plat::fs::join(dir, "worker.lock");
+    let end = tick_ms() + 15_000;
+    while tick_ms() < end {
+        plat::sleep_ms(250);
+        // (a look takes the lock for an instant; the new worker tries more than once -- engine::run)
+        if plat::FileLock::acquire(&lock).is_none() {
+            return true;
+        }
     }
-    fail("the new version could not be started: start bb-worker run again")
+    false
 }
 
 /// bb-worker update [--check]

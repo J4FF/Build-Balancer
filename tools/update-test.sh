@@ -180,47 +180,66 @@ code=$(wait_for 20 pair_code) || die "bb pair printed no code" "$work/pair.out"
 online() { "$bb" workers --json | grep '"online": true'; }
 wait_for 30 online >/dev/null || die "the worker did not come online" "$work/worker.out"
 log="$work/worker/logs/worker.log"
-restarts() { grep -c "starting again with the new programs" "$log" 2>/dev/null; }
-started() { grep -c "connected to the relay" "$log" 2>/dev/null; }
-restarted() { [ "$(restarts)" = "$1" ] && [ "$(started)" -gt "$1" ] && echo yes; }
+count() { # how often the worker's log says this
+    n=$(grep -c "$1" "$log" 2>/dev/null)
+    echo "${n:-0}"
+}
+restarts() { count "starting again with the new programs"; }
+# The worker started again since `mark` and is connected again: more restarts than then, and
+# one connection more than restarts (every worker connects once; the first never restarted).
+mark() { seen=$(restarts); }
+restarted() {
+    r=$(restarts)
+    [ "$r" -gt "$seen" ] && [ "$(count "connected to the relay")" -gt "$r" ] && echo yes
+}
+job_id() { grep '"job"' | sed 's/.*: "\(.*\)".*/\1/'; }
+# What a job prints -- nothing when no worker ran it within two minutes.  (A job without a
+# worker waits for one for as long as it takes; this test must not.)
+says() { # the shell command
+    said=$(cd "$work" && "$bb" run -d --json --no-sync --sh "$1" 2>/dev/null | job_id)
+    [ -n "$said" ] || return 0
+    (cd "$work" && "$bb" wait "$said" --timeout 2m >/dev/null 2>&1) || "$bb" cancel "$said" >/dev/null 2>&1
+    (cd "$work" && "$bb" logs "$said" 2>/dev/null | tr -d '\r')
+}
 
 # the word to a worker needs no way to the releases from here: the worker looks for itself
+mark
 BB_RELEASE_URL="http://127.0.0.1:9" "$bb" update -w update-worker >/dev/null
 check "bb update -w asks the worker, also where the releases cannot be reached" 0 $?
-check "the worker fetches the release and starts again by itself" yes "$(wait_for 150 restarted 1)"
-wait_for 30 online >/dev/null
-check "... and is back: a job runs on it" hello "$(cd "$work" && "$bb" run -q --no-sync --sh "echo hello" 2>/dev/null | tr -d '\r')"
+check "the worker fetches the release and starts again by itself" yes "$(wait_for 150 restarted)"
+check "... and is back: a job runs on it" hello "$(says "echo hello")"
 
 # --- `bb-worker update` on the worker's machine: the programs, then the worker that runs
+mark
 "$inst/bb-worker$ext" update --data "$work/worker" >"$work/wupdate.out" 2>&1
 check "bb-worker update installs" 0 $?
-check "... and has the running worker start again" yes "$(wait_for 60 restarted 2)"
-wait_for 30 online >/dev/null
-check "... which is back as well" hello "$(cd "$work" && "$bb" run -q --no-sync --sh "echo hello" 2>/dev/null | tr -d '\r')"
+check "... and has the running worker start again" yes "$(wait_for 60 restarted)"
+check "... which is back as well" hello "$(says "echo hello")"
 
 # --- an update cuts no job off: one that runs is waited for, one that arrives is not lost
 if [ "$win" = 1 ]; then nap='ping -n 13 127.0.0.1 >nul'; else nap='sleep 12'; fi
-job_id() { grep '"job"' | sed 's/.*: "\(.*\)".*/\1/'; }
 state_of() { "$bb" status "$1" --json | grep '"state"' | sed 's/.*: "\(.*\)".*/\1/'; }
 in_state() { [ "$(state_of "$1")" = "$2" ] && echo yes; }
 running=$(cd "$work" && "$bb" run -d --json --no-sync --sh "$nap" | job_id)
 # (without a job that runs, nothing below would test what it says)
 wait_for 30 in_state "$running" running >/dev/null || die "the job did not get to run before the update was asked for" "$work/worker.out"
+mark
 BB_RELEASE_URL="http://127.0.0.1:9" "$bb" update -w update-worker >/dev/null
 check "... the job still runs when the update is asked for" running "$(state_of "$running")"
 arriving=$(cd "$work" && "$bb" run -d --json --no-sync --sh "echo late" | job_id)
 (cd "$work" && "$bb" wait "$running" "$arriving" --timeout 3m >/dev/null 2>&1)
 check "a job that runs when the update is asked for runs to its end" done "$(state_of "$running")"
 check "a job that arrives meanwhile is not lost" done "$(state_of "$arriving")"
-check "... and the worker updates and starts again once they are through" yes "$(wait_for 150 restarted 3)"
+check "... and the worker updates and starts again once they are through" yes "$(wait_for 150 restarted)"
 
 # --- a worker sees by itself that its program was replaced: an update made from elsewhere
 # (`bb update` here; an installer, another user) has no way to ask it, and needs none
-wait_for 30 online >/dev/null
+mark
 "$bb" update >/dev/null 2>&1
-check "a worker whose program another update replaced starts again by itself" yes "$(wait_for 90 restarted 4)"
-wait_for 30 online >/dev/null
-check "... and is back as well" hello "$(cd "$work" && "$bb" run -q --no-sync --sh "echo hello" 2>/dev/null | tr -d '\r')"
+check "a worker whose program another update replaced starts again by itself" yes "$(wait_for 90 restarted)"
+check "... and is back as well" hello "$(says "echo hello")"
+# (a worker whose follower does not come up works on -- and passes for one that started again)
+check "every worker that started again came up at the first try" 0 "$(grep -c "did not start" "$work/worker.out")"
 
 # --- a download that does not match its checksum changes nothing
 before=$(cksum <"$bb")

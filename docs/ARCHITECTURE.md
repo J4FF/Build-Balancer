@@ -122,8 +122,10 @@ sends a worker:
    update is at work in the folder, that tidying keeps its hands off.
 4. **Start again**, so the new version runs: the app starts the program that is in its
    place now and closes (the new window waits for the old one to be gone, then lends and
-   reconnects as at every start); `bb-worker run` in a terminal does the same; as a service
-   it ends with an error code, and the service manager starts it again (systemd's
+   reconnects as at every start); `bb-worker run` in a terminal does the same, and ends only
+   once the new worker holds the data folder -- nobody watches a worker in a terminal, so
+   if the new one does not come up, the old one works on and tries again later; as a
+   service it ends with an error code, and the service manager starts it again (systemd's
    `Restart=on-failure`).
 
 A worker updates only while no job runs, and from the moment it decides to, no job starts:

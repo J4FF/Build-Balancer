@@ -163,6 +163,18 @@ pub const RESTART_ONLY: u8 = 2;
 /// manager does that for a program that ended with an error
 pub const EXIT_RESTART: i32 = 75;
 
+/// what Engine::start says while another engine holds the data folder
+pub const BUSY: &str = "a worker already runs on this data folder (bb-worker, its service, or the Build Balancer app)";
+
+/// run() acts on no wish to start again before this time (tick_ms)
+static RESTARTS_NOT_BEFORE: AtomicU64 = AtomicU64::new(0);
+
+/// A restart did not work (main: the new program did not come up): this one works on, and
+/// leaves it be for a while -- the programs that are there are seen again and again.
+pub fn defer_restarts(ms: u64) {
+    RESTARTS_NOT_BEFORE.store(tick_ms() + ms, Relaxed);
+}
+
 /// The file that asks the worker running on a data folder to start again.  `bb-worker update`
 /// writes it: "now" after it replaced the programs, else the version the programs have -- a
 /// worker that runs an older one (its file was replaced by someone else) starts again, too.
@@ -224,7 +236,7 @@ impl Engine {
     pub fn start(dir: &str) -> Result<Engine, String> {
         let cfg = config::load(dir).ok_or_else(|| not_paired(dir))?;
         let p = config::paired(&cfg)?;
-        let lock = plat::FileLock::acquire(&plat::fs::join(dir, "worker.lock")).ok_or("a worker already runs on this data folder (bb-worker, its service, or the Build Balancer app)")?;
+        let lock = plat::FileLock::acquire(&plat::fs::join(dir, "worker.lock")).ok_or(BUSY)?;
         let relay = Relay::open(&cfg.relay, &cfg.relay_fp, &cfg.id, &cfg.token)?;
         let cores = Cores::new(cfg.cpu);
         let state = j::load::<State>(&plat::fs::join(dir, "state.json")).unwrap_or_default();
@@ -336,11 +348,23 @@ pub fn run(dir: &str) -> i32 {
         }
         plat::sleep_ms(100);
     }
-    let e = match Engine::start(dir) {
-        Ok(e) => e,
-        Err(m) => {
-            plat::log_error("worker", &m);
-            return 1;
+    // The data folder's lock can be taken for a moment by someone who is no worker: the
+    // worker this one follows (it started this one and is on its way out), or a command that
+    // asks whether a worker runs here.  A worker that was started again has nobody to start
+    // it a second time, so it does not give up at the first look.
+    let mut waited = 0;
+    let e = loop {
+        match Engine::start(dir) {
+            Ok(e) => break e,
+            Err(m) if m == BUSY && waited < 3000 => {
+                // (not the rhythm in which the worker before this one looks: main's taken_over)
+                plat::sleep_ms(200);
+                waited += 200;
+            }
+            Err(m) => {
+                plat::log_error("worker", &m);
+                return 1;
+            }
         }
     };
     {
@@ -349,7 +373,7 @@ pub fn run(dir: &str) -> i32 {
     }
     plat::log_info("worker", &format!("version {} started", bb_core::VERSION));
     // an update that did not work is tried again a few times: a download can fail
-    let (mut tries, mut not_before) = (0u32, 0u64);
+    let (mut tries, mut not_before) = (0u32, RESTARTS_NOT_BEFORE.load(Relaxed));
     while !plat::service::stop_requested() {
         plat::sleep_ms(300);
         // A newer version: when no job runs here, fetch it (if that is still to do) and start
