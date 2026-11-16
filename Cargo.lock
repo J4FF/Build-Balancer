@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "bb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb_core",
  "bb_exec",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "bb-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb",
  "bb-worker",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "bb-relay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb_core",
  "bb_exec",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "bb-worker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb_core",
  "bb_exec",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "bb_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jflib-agent-core",
  "jflib-base",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "bb_exec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb_core",
  "jflib-agent-core",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "bb_sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bb_core",
  "jflib-agent-core",

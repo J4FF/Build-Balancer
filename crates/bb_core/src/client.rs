@@ -194,6 +194,17 @@ impl Relay {
         fail(r.status, text)
     }
 
+    /// `call` for a blob transfer, which may be sent twice: blobs are addressed by their content.  The relay closes
+    /// a kept connection after 30 s without a request or after 1000 requests; the HTTP client then finds the
+    /// connection closed and does not resend a POST (it reports "malformed HTTP answer").  So a transfer that
+    /// failed before any answer (status 0) is sent once more, on a fresh connection.
+    fn call_blobs(&self, target: &str, body: &[u8]) -> RelayResult<Vec<u8>> {
+        match self.call("POST", target, false, body) {
+            Err(e) if e.status == 0 => self.call("POST", target, false, body),
+            r => r,
+        }
+    }
+
     fn call_json(&self, method: &str, target: &str, body: Option<&Value>) -> RelayResult<Value> {
         let text = body.map(j::text).unwrap_or_default();
         let b = self.call(method, target, true, text.as_bytes())?;
@@ -286,7 +297,7 @@ impl Relay {
     pub fn blobs_has(&self, ids: &[[u8; 32]]) -> RelayResult<Vec<bool>> {
         let mut out = Vec::with_capacity(ids.len());
         for part in ids.chunks(8192) {
-            let b = self.call("POST", "/v1/blobs/has", false, part.as_flattened())?;
+            let b = self.call_blobs("/v1/blobs/has", part.as_flattened())?;
             if b.len() != part.len() {
                 return fail(0, "a blob answer has the wrong length");
             }
@@ -297,7 +308,7 @@ impl Relay {
 
     /// upload a pack made with pack_add
     pub fn blobs_put(&self, pack: &[u8]) -> RelayResult<()> {
-        self.call("POST", "/v1/blobs/put", false, pack).map(|_| ())
+        self.call_blobs("/v1/blobs/put", pack).map(|_| ())
     }
 
     /// fetch blobs; `on` gets each id with its bytes, None for one the relay does not have.
@@ -306,7 +317,7 @@ impl Relay {
         if ids.is_empty() {
             return Ok(());
         }
-        let b = self.call("POST", "/v1/blobs/get", false, ids.as_flattened())?;
+        let b = self.call_blobs("/v1/blobs/get", ids.as_flattened())?;
         let mut answered: alloc::collections::BTreeSet<[u8; 32]> = alloc::collections::BTreeSet::new();
         let mut p = 0;
         while p + 36 <= b.len() {
