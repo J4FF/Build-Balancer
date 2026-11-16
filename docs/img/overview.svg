@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 392" width="960" height="392" role="img" aria-labelledby="t d" font-family="'Segoe UI', -apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <title id="t">How Build Balancer connects your machines</title>
+  <desc id="d">The main machine sends jobs and changed files to the relay. Workers fetch them there, build, and send output and results back the same way. Every machine connects out to the relay, and everything is encrypted between main machine and worker.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0.5 L10 5 L0 9.5 z" fill="#1F5FAE"/>
+    </marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="959" height="391" rx="16" fill="#F4F6FA" stroke="#D5DBE5"/>
+
+  <!-- the main machine -->
+  <rect x="24" y="82" width="220" height="170" rx="12" fill="#FFFFFF" stroke="#D5DBE5"/>
+  <g fill="none" stroke="#1F5FAE" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(44 103)">
+    <rect x="0" y="0" width="34" height="23" rx="3"/>
+    <path d="M17 23 V30 M9 30 H25"/>
+  </g>
+  <text x="92" y="116" font-size="17" font-weight="600" fill="#1B2430">Main machine</text>
+  <text x="92" y="134" font-size="12.5" fill="#5A6575">the PC you work on</text>
+  <rect x="44" y="154" width="36" height="26" rx="6" fill="#E3EDF9"/>
+  <text x="62" y="172" font-size="13" font-weight="600" fill="#1F5FAE" text-anchor="middle">bb</text>
+  <rect x="88" y="154" width="112" height="26" rx="6" fill="#E3EDF9"/>
+  <text x="144" y="172" font-size="13" font-weight="600" fill="#1F5FAE" text-anchor="middle">BuildBalancer</text>
+  <text x="44" y="208" font-size="13" fill="#5A6575">You or an AI agent decide</text>
+  <text x="44" y="227" font-size="13" fill="#5A6575">which machine builds what.</text>
+
+  <!-- the relay -->
+  <rect x="370" y="82" width="220" height="170" rx="12" fill="#FFFFFF" stroke="#D5DBE5"/>
+  <g fill="none" stroke="#1F5FAE" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(390 101)">
+    <rect x="0" y="0" width="34" height="13" rx="3"/>
+    <rect x="0" y="18" width="34" height="13" rx="3"/>
+    <path d="M7 6.5 H8 M7 24.5 H8"/>
+  </g>
+  <text x="438" y="116" font-size="17" font-weight="600" fill="#1B2430">Relay</text>
+  <text x="438" y="134" font-size="12.5" fill="#5A6575">a small server, or your PC</text>
+  <rect x="390" y="154" width="78" height="26" rx="6" fill="#E3EDF9"/>
+  <text x="429" y="172" font-size="13" font-weight="600" fill="#1F5FAE" text-anchor="middle">bb-relay</text>
+  <g fill="none" stroke="#5A6575" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" transform="translate(390 196)">
+    <rect x="0" y="6" width="13" height="10" rx="2" fill="#5A6575"/>
+    <path d="M3 6 V4 a3.5 3.5 0 0 1 7 0 V6"/>
+  </g>
+  <text x="411" y="208" font-size="13" fill="#5A6575">Only passes data on.</text>
+  <text x="411" y="227" font-size="13" fill="#5A6575">It has no key to read it.</text>
+
+  <!-- the machines that lend power -->
+  <g>
+    <rect x="716" y="30" width="220" height="78" rx="12" fill="#FFFFFF" stroke="#D5DBE5"/>
+    <circle cx="738" cy="56" r="5" fill="#2E8B57"/>
+    <text x="752" y="61" font-size="15.5" font-weight="600" fill="#1B2430">laptop</text>
+    <text x="920" y="61" font-size="12.5" fill="#5A6575" text-anchor="end">Linux</text>
+    <text x="738" y="88" font-size="12.5" fill="#5A6575">lends 6 of 8 processors</text>
+  </g>
+  <g>
+    <rect x="716" y="128" width="220" height="78" rx="12" fill="#FFFFFF" stroke="#D5DBE5"/>
+    <circle cx="738" cy="154" r="5" fill="#2E8B57"/>
+    <text x="752" y="159" font-size="15.5" font-weight="600" fill="#1B2430">tower</text>
+    <text x="920" y="159" font-size="12.5" fill="#5A6575" text-anchor="end">Windows</text>
+    <text x="738" y="186" font-size="12.5" fill="#5A6575">lends 12 of 16 processors</text>
+  </g>
+  <g>
+    <rect x="716" y="226" width="220" height="78" rx="12" fill="#FFFFFF" stroke="#D5DBE5"/>
+    <circle cx="738" cy="252" r="5" fill="#2E8B57"/>
+    <text x="752" y="257" font-size="15.5" font-weight="600" fill="#1B2430">mini</text>
+    <text x="920" y="257" font-size="12.5" fill="#5A6575" text-anchor="end">macOS</text>
+    <text x="738" y="284" font-size="12.5" fill="#5A6575">lends 4 of 8 processors</text>
+  </g>
+
+  <!-- main machine <-> relay -->
+  <g stroke="#1F5FAE" stroke-width="2" fill="none">
+    <path d="M252 142 H362" marker-end="url(#a)"/>
+    <path d="M362 196 H252" marker-end="url(#a)"/>
+  </g>
+  <text x="307" y="132" font-size="12.5" fill="#1B2430" text-anchor="middle">jobs + changed files</text>
+  <text x="307" y="216" font-size="12.5" fill="#1B2430" text-anchor="middle">output + results</text>
+
+  <!-- relay <-> workers -->
+  <g stroke="#1F5FAE" stroke-width="2" fill="none">
+    <path d="M598 150 C650 150 650 69 708 69" marker-start="url(#a)" marker-end="url(#a)"/>
+    <path d="M598 167 H708" marker-start="url(#a)" marker-end="url(#a)"/>
+    <path d="M598 184 C650 184 650 265 708 265" marker-start="url(#a)" marker-end="url(#a)"/>
+  </g>
+
+  <text x="480" y="340" font-size="14" font-weight="600" fill="#1B2430" text-anchor="middle">Every machine connects out to the relay: no PC needs an open port.</text>
+  <text x="480" y="363" font-size="13" fill="#5A6575" text-anchor="middle">Jobs, files and logs are encrypted between the main machine and each worker. The relay cannot read them.</text>
+</svg>

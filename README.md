@@ -1,6 +1,11 @@
-# Build Balancer
-
-**Spread builds over the machines you own.**
+<p align="center">
+  <img src="docs/img/logo.svg" width="112" height="112" alt="Build Balancer logo">
+</p>
+<h1 align="center">Build Balancer</h1>
+<p align="center"><b>Spread builds over the machines you own.</b></p>
+<p align="center">
+  <a href="https://github.com/J4FF/Build-Balancer/actions/workflows/ci.yml"><img src="https://github.com/J4FF/Build-Balancer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 You have one main machine and a build that takes too long -- and a laptop, an old tower, a
 Linux box that sit idle. Build Balancer lets the main machine hand work to them: it sends a
@@ -8,15 +13,9 @@ project's files to a worker, runs a command there and brings the results back. W
 gets which piece of work is decided on the main machine, by you or by an AI agent that sees
 what every worker lends and is doing.
 
-```
-   main machine                         relay                          workers
-  ┌────────────┐                    ┌──────────┐                   ┌──────────────┐
-  │ bb         │ ── sealed jobs ──▶ │ bb-relay │ ◀── long poll ─── │ bb-worker    │ laptop (Linux)
-  │ (you / an  │ ◀─ sealed logs, ── │ passes   │ ─── sealed job ─▶ │  6 of 8 CPUs │
-  │  AI agent) │    results         │ data on  │                   │  12 GiB RAM  │
-  └────────────┘                    └──────────┘ ◀──────────────── │ bb-worker    │ tower (Windows)
-        every machine connects OUT to the relay; no worker opens a port     └──────────────┘
-```
+<p align="center">
+  <img src="docs/img/overview.svg" width="900" alt="The main machine sends jobs and changed files to the relay; the machines that lend power fetch them there and send output and results back. Every machine connects out to the relay.">
+</p>
 
 - **Four programs, one file each**, for Windows, Linux and macOS: `bb` (main machine),
   `bb-worker` (machines that lend power), `bb-relay` (the one address everything can reach)
@@ -42,61 +41,88 @@ Status: version 0.1 -- it works end to end on Windows and Linux (see [What is te
 it is young, and the interface may still change. macOS is new: the code is there and the CI
 builds and tests it on a Mac, but nobody has used it on one yet.
 
-## Quick start
+## Set it up in three steps
 
-**1. The relay** -- on a machine every device can reach (a small server, or simply the main
-machine when everything is in one network). Copy `bb-relay` there and start it:
+<p align="center">
+  <img src="docs/img/setup.svg" width="900" alt="1: start bb-relay and copy the line it prints. 2: on your main PC open BuildBalancer, choose This is my main machine and paste the line. 3: on every other PC open BuildBalancer, choose This machine lends power and enter the code your main PC shows.">
+</p>
+
+Nothing has to be installed: the programs are single files. Build them once (see
+[Building](#building) -- they land in `dist/`) and copy them to your machines.
+
+### 1. Start the relay
+
+The relay is the one address all your machines talk to. Run it on a small server -- or
+simply on your main PC when all machines are in the same network:
 
 ```sh
 ./bb-relay
 ```
 
-It makes its data folder, its certificate and a setup key, and prints the two commands for
-the next steps. `bb-relay service install` keeps it running as a system service.
+It prints a line that starts with `bb setup`. **Copy that line** and leave the relay
+running (`bb-relay service install` keeps it running across restarts; it listens on port 7700).
 
-**2. The main machine** -- run the line the relay printed:
+### 2. Set up your main PC
+
+Open **BuildBalancer**, choose **This is my main machine**, paste the line into the first
+field and click **Set up**.
+
+### 3. Add your other PCs
+
+On the main PC open **Machines** and click **Add a machine**. It shows the relay's address
+and a code:
+
+![The main machine shows the relay's address and a one-time code](docs/img/pairing.png)
+
+On the other PC open **BuildBalancer**, choose **This machine lends power**, enter the
+address and the code, and click **Pair**:
+
+![The other machine: address, code, Pair](docs/img/connect.png)
+
+That is all. The machine shows up under **Machines** and stays paired; do the same on every
+PC that should help. How much of a PC may be used is set with the sliders on that PC
+(page **This machine**).
+
+### Build something
+
+On the main PC open **Project**, choose your project's folder (the first time, click **Set
+up as a project**), type the command you would run yourself, and click **Run**. The
+least busy machine builds it; the output appears under **Jobs**.
+
+![The page "Project": a folder, where to run, the project's tasks, a command](docs/img/project.png)
+
+The same from a terminal, inside the project's folder:
 
 ```sh
-bb setup relay.example.org:7700 <setup key>
-```
-
-**3. Every worker** -- on the main machine:
-
-```sh
-bb pair
-```
-
-prints a command with a one-time code; run it on the machine that should lend its power,
-then start the worker:
-
-```sh
-bb-worker join relay.example.org:7700 K7QF-2M9X-PD4T
-bb-worker run                 # or: bb-worker service install
-```
-
-`bb workers` on the main machine now shows it: what it lends, what is idle, which build
-tools it has.
-
-**4. A project** -- in your project's folder:
-
-```sh
-bb init                                       # writes buildbalancer.ini, nothing else
-bb run -- cargo build --release               # runs on the least busy worker that fits
+bb init                                       # once: writes buildbalancer.ini, nothing else
+bb run -- cargo build --release               # runs on the least busy machine that fits
 bb run -w laptop --out "target/release/app" -- cargo build --release     # ... and brings the result back
 ```
 
+<details>
+<summary><b>The whole setup without a window</b> (servers, SSH, scripts)</summary>
+
+```sh
+./bb-relay                                            # 1  prints: bb setup ADDRESS KEY
+bb setup relay.example.org:7700 KEY                   # 2  on the main machine: the line the relay printed
+bb pair                                               # 3  on the main machine: prints the next line, with a code
+bb-worker join relay.example.org:7700 K7QF-2M9X-PD4T  #    on the machine that lends power
+bb-worker run                                         #    ... or: bb-worker service install
+bb workers                                            # on the main machine: who is there, what they lend
+```
+
+</details>
+
 ## The desktop app
+
+`BuildBalancer` is one window for a machine that lends its power, for the main machine, or
+for both.
 
 ![The page "This machine": what it lends, what runs, the projects kept here](docs/img/this-machine.png)
 
-`BuildBalancer` is one window for a machine that lends its power, for the main machine, or
-for both. On a machine that should help, it is all you need:
-
-1. Start it and choose **This machine lends power**.
-2. Enter the relay's address and the code from the main machine (there: **Machines > Add a
-   machine**, or `bb pair`) -- or paste the whole `bb-worker join ...` line into the first field.
-3. Done. The switch **Lend power** turns the worker on and off; the sliders set how many
-   processors, how much memory and how much disk jobs may use, and take effect at once.
+**On a machine that lends power**, the switch **Lend power** turns the worker on and off;
+the sliders set how many processors, how much memory and how much disk jobs may use, and
+take effect at once.
 
 Under **Projects on this machine** every project that has files here is listed with its size.
 **Remove** deletes everything of one -- its files, the build output that grew next to them,
@@ -104,18 +130,24 @@ the logs of its jobs -- and **Remove everything** does it for all. Nothing break
 the next job sends the project again. **Unpair and remove everything** leaves the machine as
 if Build Balancer had never run on it.
 
-On the main machine the app shows the workers with what they lend and do (**Machines**, also
-with a **Remove** per project and worker), the jobs with their output (**Jobs**), and runs a
-project's tasks or a command (**Project**). It works on the same files as `bb`, so jobs an
-agent starts through `bb` show up in the window too.
+**On the main machine** the app shows the workers with what they lend and do (**Machines**,
+also with a **Remove** per project and worker), the jobs with their output (**Jobs**), and
+runs a project's tasks or a command (**Project**). It works on the same files as `bb`, so
+jobs an agent starts through `bb` show up in the window too.
 
 ![The page "Machines" on the main machine](docs/img/machines.png)
+
+![The page "Jobs": every job with its state, its result and the end of its output](docs/img/jobs.png)
 
 The worker inside the app runs while the window is open. For a machine nobody is logged in
 to, use `bb-worker service install` instead. `BuildBalancer --demo` shows the app with
 made-up machines and contacts nothing.
 
 ## Working with it
+
+<p align="center">
+  <img src="docs/img/job.svg" width="900" alt="A build in five steps: compare your folder with the worker's copy, send only changed files, build on the lent processors, collect the files you named, receive them in your project folder.">
+</p>
 
 ```sh
 bb workers                          # who is there, what they lend and do, their tools
@@ -303,6 +335,7 @@ display (its pictures go to `target/shots/`, which has to exist); the CI (`.gith
 | `worker` | `bb-worker` and the library behind it (`bb_worker`): the engine with inbox, scheduler, job execution and watchdogs; pairing; cleaning up |
 | `cli` | `bb` and the library behind it (`bb_main`): the fleet, jobs, pairing; the commands, JSON output, MCP server and guide |
 | `gui` | `BuildBalancer`: the desktop app, a window around `bb_worker` and `bb_main` (JFLib's UI in the style "netlab") |
+| `docs/img`, `tools/mkicon.py` | the logo (`logo.svg`), the app's icon drawn from it (`gui/res/app.ico`), and this page's pictures (`gui/tests/shots.uis` takes the screenshots) |
 
 ## What is tested
 
