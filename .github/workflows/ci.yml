@@ -48,6 +48,16 @@ jobs:
         run: cargo build --locked --workspace --target ${{ matrix.target }}
       - name: A whole fleet on this machine
         run: sh tools/smoke.sh target/${{ matrix.target }}/debug
+      # a release made on the spot, fetched, checked and installed by install.sh / install.ps1
+      - name: The install script
+        run: sh tools/install-test.sh target/${{ matrix.target }}/debug
+      # what needs root and systemd: the services run as the person who installs them, on the
+      # data folder that person already has, and a server is set up by one command
+      - name: The programs as system services
+        if: runner.os == 'Linux'
+        env:
+          BB_SERVICE_TEST: 1
+        run: sh tools/service-test.sh target/${{ matrix.target }}/debug
       - name: The desktop app's pages
         run: |
           mkdir -p target/shots

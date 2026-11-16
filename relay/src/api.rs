@@ -139,6 +139,8 @@ fn claim(store: &Store, req: &Request) -> Response {
         bb_core::util::put_file(&hash_file, want.as_bytes());
         return error(500, "storage", "the relay cannot write its data folder");
     }
+    // the key is used up: its text, kept to show the setup line again, goes too
+    plat::delete(&store.path("setup.key"));
     plat::log_info("relay", &format!("main machine {} ({}) took this relay", name, id));
     Response::json(200, &j::obj([("token", j::s(&token))]))
 }

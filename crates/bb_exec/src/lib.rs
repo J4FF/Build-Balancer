@@ -5,6 +5,7 @@
 //   run     find a program, write a script, start it on its processors, read its output,
 //           measure its memory, end it
 //   tools   which build tools a machine has
+//   svc     the programs as system services, run as the right user
 //   Cores   which processors are lent and which of them a running job holds
 //   CpuMeter  how busy the whole machine is
 #![no_std]
@@ -12,6 +13,7 @@
 extern crate alloc;
 
 pub mod run;
+pub mod svc;
 pub mod sys;
 pub mod tools;
 

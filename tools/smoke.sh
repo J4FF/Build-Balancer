@@ -82,22 +82,38 @@ start_worker() {
     worker_winpid=$(winpid "$worker_pid")
 }
 
-"$bin/bb-relay$ext" --listen "127.0.0.1:$port" --data "$work/relay" >"$work/relay.out" 2>&1 &
-relay_pid=$!
-key=$(wait_for 20 setup_key) || die "the relay printed no setup key" "$work/relay.out"
-relay_winpid=$(winpid "$relay_pid")
+start_relay() {
+    "$bin/bb-relay$ext" --listen "127.0.0.1:$port" --data "$work/relay" >"$work/relay.out" 2>&1 &
+    relay_pid=$!
+    key=$(wait_for 20 setup_key) || die "the relay printed no setup key" "$work/relay.out"
+    relay_winpid=$(winpid "$relay_pid")
+}
+start_relay
+# the line someone copied must still work after the relay was restarted (a closed terminal, a
+# service installed in between)
+first_key=$key
+exec 3>&2 2>/dev/null
+stop "$relay_pid" "$relay_winpid"
+wait "$relay_pid"
+exec 2>&3 3>&-
+start_relay
+check "the setup key survives a restart of the relay" "$first_key" "$key"
+check "bb-relay status shows the setup line again" 1 "$("$bin/bb-relay$ext" status --data "$work/relay" | grep -c "bb setup .* $key")"
 "$bb" setup "127.0.0.1:$port" "$key" --name smoke-main >/dev/null
 check "setup" 0 $?
+check "a used setup key is not shown any more" 0 "$("$bin/bb-relay$ext" status --data "$work/relay" | grep -c "bb setup .* $key")"
 
 "$bb" pair >"$work/pair.out" 2>&1 &
 pair_pid=$!
 code=$(wait_for 20 pair_code) || die "bb pair printed no code" "$work/pair.out"
-"$bin/bb-worker$ext" join "127.0.0.1:$port" "$code" --data "$work/worker" --name smoke-worker --cpu 2 --ram 2G --disk 1G --priority normal >/dev/null
-check "pairing" 0 $?
+# join pairs and goes on lending: a machine that joined is there without another command
+"$bin/bb-worker$ext" join "127.0.0.1:$port" "$code" --data "$work/worker" --name smoke-worker --cpu 2 --ram 2G --disk 1G --priority normal >"$work/worker.out" 2>&1 &
+worker_pid=$!
 wait "$pair_pid" 2>/dev/null
-
-start_worker
-check "worker online" 1 "$(online | grep -c .)"
+check "pairing" 0 $?
+wait_for 30 online >/dev/null || die "the worker did not come online after joining" "$work/worker.out"
+worker_winpid=$(winpid "$worker_pid")
+check "the machine lends right after joining" 1 "$(online | grep -c .)"
 
 mkdir -p "$work/proj/src" "$work/proj/ignored"
 cd "$work/proj" || exit 1
@@ -157,6 +173,16 @@ start_worker
 "$bb" wait "$waited" >/dev/null
 check "the job that waited runs after a restart" 0 $?
 check "the job that ran is reported as interrupted" error "$(state_of "$ran")"
+
+# a machine that only paired: the main machine says what is missing there
+second_code() { grep "bb-worker join" "$work/pair2.out" 2>/dev/null | awk '{print $4}'; }
+"$bb" pair >"$work/pair2.out" 2>&1 &
+pair_pid=$!
+code=$(wait_for 20 second_code) || die "bb pair printed no code" "$work/pair2.out"
+"$bin/bb-worker$ext" join "127.0.0.1:$port" "$code" --data "$work/idle" --name smoke-idle --no-run >/dev/null
+check "join --no-run pairs and ends" 0 $?
+wait "$pair_pid" 2>/dev/null
+check "a paired machine that never ran gets a hint" 1 "$("$bb" workers | grep -c "smoke-idle: paired, but it never came online")"
 
 echo
 if [ "$fails" = 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed"; fi

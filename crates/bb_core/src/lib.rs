@@ -30,6 +30,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// refuse each other with a message instead of guessing
 pub const PROTOCOL: u32 = 1;
 /// the relay's default port
+/// where the project lives: releases with the programs and the install scripts
+pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 pub const DEFAULT_PORT: u16 = 7700;
 /// the largest plaintext piece of a file (and of a manifest) that becomes one blob
 pub const CHUNK: usize = 4 << 20;

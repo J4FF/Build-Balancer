@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 256" width="960" height="256" role="img" aria-labelledby="t d" font-family="'Segoe UI', -apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif">
   <title id="t">Setting up Build Balancer in three steps</title>
-  <desc id="d">Step 1: start bb-relay and copy the line it prints. Step 2: on your main PC open BuildBalancer, choose "This is my main machine" and paste the line. Step 3: on every other PC open BuildBalancer, choose "This machine lends power" and enter the code your main PC shows.</desc>
+  <desc id="d">Step 1: on the server, bb-relay service install prints one line; copy it. Step 2: on your main PC open BuildBalancer, choose "This is my main machine" and paste the line. Step 3: on every other PC open BuildBalancer, choose "This machine lends power" and enter the code your main PC shows.</desc>
   <rect x="0.5" y="0.5" width="959" height="255" rx="16" fill="#F4F6FA" stroke="#D5DBE5"/>
 
   <!-- 1 -->
@@ -9,9 +9,9 @@
   <text x="58" y="74" font-size="17" font-weight="700" fill="#FFFFFF" text-anchor="middle">1</text>
   <text x="86" y="74" font-size="17" font-weight="600" fill="#1B2430">Start the relay</text>
   <text x="44" y="108" font-size="12.5" fill="#5A6575">on a small server, or on your main PC</text>
-  <text x="44" y="138" font-size="13.5" fill="#1B2430">Run the program</text>
-  <rect x="44" y="150" width="92" height="30" rx="6" fill="#1B2430"/>
-  <text x="90" y="170" font-size="13.5" fill="#FFFFFF" text-anchor="middle" font-family="Consolas, Menlo, 'DejaVu Sans Mono', monospace">bb-relay</text>
+  <text x="44" y="138" font-size="13.5" fill="#1B2430">On the server, run</text>
+  <rect x="44" y="150" width="214" height="30" rx="6" fill="#1B2430"/>
+  <text x="151" y="170" font-size="13.5" fill="#FFFFFF" text-anchor="middle" font-family="Consolas, Menlo, 'DejaVu Sans Mono', monospace">bb-relay service install</text>
   <text x="44" y="206" font-size="13.5" fill="#1B2430">It prints one line. Copy it.</text>
 
   <!-- 2 -->

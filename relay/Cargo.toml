@@ -22,6 +22,7 @@ crypto.workspace = true
 netio.workspace = true
 agent_core.workspace = true
 bb_core.workspace = true
+bb_exec.workspace = true
 
 
 [build-dependencies]

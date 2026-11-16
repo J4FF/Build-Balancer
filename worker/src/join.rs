@@ -121,7 +121,7 @@ pub fn pair(dir: &str, addr: &str, code: &str, mut cfg: Config, say: &mut dyn Fn
 }
 
 /// `bb-worker join RELAY CODE [options]`
-pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
+pub fn join(cli: &Cli, dir: &str) -> Result<Config, String> {
     let (Some(addr), Some(code)) = (cli.pos.get(1), cli.pos.get(2)) else {
         return Err(String::from("bb-worker join RELAY CODE -- both come from `bb pair` on the main machine"));
     };
@@ -132,12 +132,5 @@ pub fn join(cli: &Cli, dir: &str) -> Result<String, String> {
     }
     let mut cfg = fresh_config(dir);
     config::apply_options(&mut cfg, cli, dir)?;
-    let cfg = pair(dir, addr, code, cfg, &mut |m| bb_core::util::out(&format!("{}\n", m)))?;
-    Ok(format!(
-        "\nPaired with \"{}\" as worker \"{}\" ({}).\n\nThis machine lends:\n{}\n  change it any time:  bb-worker config --cpu 6 --ram 12G --disk 40G\n\nStart working:\n  bb-worker run                 in this terminal, or\n  bb-worker service install     as a system service that starts with the machine\n",
-        cfg.main_name,
-        cfg.name,
-        cfg.id,
-        config::offer_text(&cfg)
-    ))
+    pair(dir, addr, code, cfg, &mut |m| bb_core::util::out(&format!("{}\n", m)))
 }

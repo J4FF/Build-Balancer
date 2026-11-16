@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use bb_core::proto::{self, WorkerStatus};
 use bb_core::util::{ago_text, dur_text, now, size_text};
 use bb_main::conf::{JobRec, MainConfig, PairedWorker, Project, Task};
-use bb_main::fleet::WorkerView;
+use bb_main::fleet::{self, Needs, WorkerView};
 use bb_main::ops::{self, Pairing};
 use bb_worker::cleanup;
 use bb_worker::config::Config;
@@ -392,6 +392,16 @@ pub fn fleet(g: &mut Gui, ui: &mut Ui) {
         let left = p.deadline.saturating_sub(bb_core::util::tick_ms()) / 60_000 + 1;
         ui.text(TS_BODY | TX_SECONDARY, &tf("Wartet auf das Gerät … der Code gilt noch {} Minuten, einmal.", &[&format!("{}", left.min(p.minutes as u64))]));
         ui.box_end();
+        // a machine that has no Build Balancer yet: one line fetches it, pairs and starts lending
+        ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, t("Noch kein Build Balancer auf dem Gerät? Eine Zeile lädt es herunter und koppelt gleich:"));
+        ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
+        for (k, label, line) in [(14, t("Für Linux und macOS kopieren"), p.install_line_sh()), (15, t("Für Windows kopieren"), p.install_line_powershell())] {
+            if ui.button(id::FLEET + k, label) & EV_ACT != 0 {
+                ui.clip_set(CLIP_TEXT, line.as_bytes());
+                ui.toast(IB_INFO, t("Kopiert"), &line, 4000);
+            }
+        }
+        ui.box_end();
         ui.box_end();
         ui.spacer(12);
     }
@@ -662,7 +672,7 @@ pub fn project(g: &mut Gui, ui: &mut Ui) {
     }
     let mut start: Option<String> = None;
     for (i, task) in p.tasks.iter().enumerate() {
-        task_row(ui, id::TASK_ROW + i as u32 * 2, task, busy, &mut start);
+        task_row(ui, id::TASK_ROW + i as u32 * 2, task, task_warning(task, &g.fleet), busy, &mut start);
     }
     if busy {
         busy_row(ui, id::PROJECT + 11, t("Dateien werden verglichen und geschickt …"));
@@ -691,7 +701,24 @@ pub fn project(g: &mut Gui, ui: &mut Ui) {
     card_end(ui);
 }
 
-fn task_row(ui: &mut Ui, base: u32, task: &Task, busy: bool, start: &mut Option<String>) {
+/// What stands in a task's way before it is started: no machine can take it right now (None:
+/// one can, or the machines are not known yet).  The usual reason gets its own words -- a tool
+/// the task needs is on none of the machines.
+fn task_warning(task: &Task, fleet: &[WorkerView]) -> Option<String> {
+    let needs = Needs::parse(&task.needs).ok()?;
+    let named = |v: &&WorkerView| task.worker.is_empty() || task.worker == "auto" || v.paired.id == task.worker || v.paired.name.eq_ignore_ascii_case(&task.worker);
+    let asked: Vec<&WorkerView> = fleet.iter().filter(named).collect();
+    if asked.is_empty() || asked.iter().any(|v| fleet::why_not(v, &needs, task.cpu, task.ram).is_none()) {
+        return None;
+    }
+    let known: Vec<&WorkerStatus> = asked.iter().filter_map(|v| v.status.as_ref()).collect();
+    if let Some(tool) = needs.tools.iter().find(|tool| !known.is_empty() && !known.iter().any(|s| s.has_tool(tool))) {
+        return Some(tf("Kein Gerät hat „{}“. Dort installieren – die Geräte finden es danach von selbst.", &[tool]));
+    }
+    Some(String::from(t("Gerade kann kein Gerät diese Aufgabe übernehmen – unter „Geräte“ steht, was fehlt.")))
+}
+
+fn task_row(ui: &mut Ui, base: u32, task: &Task, warning: Option<String>, busy: bool, start: &mut Option<String>) {
     ui.box_begin(0, BOX_H | BOX_XCENTER, 10);
     ui.next_size(-1, 0);
     ui.box_begin(0, BOX_V, 2);
@@ -705,6 +732,12 @@ fn task_row(ui: &mut Ui, base: u32, task: &Task, busy: bool, start: &mut Option<
         line += &tf("   ·   bringt {} zurück", &[&task.outputs.join(" ")]);
     }
     ui.text(TS_CAPTION | TX_SECONDARY | TX_ELLIPSIS, &line);
+    if let Some(w) = &warning {
+        ui.box_begin(0, BOX_H | BOX_XCENTER, 6);
+        ui.badge(BADGE_WARN, t("fehlt"));
+        ui.text(TS_CAPTION | TX_WRAP, w);
+        ui.box_end();
+    }
     ui.box_end();
     if busy {
         ui.next_flags(ST_DISABLED);

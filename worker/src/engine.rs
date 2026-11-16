@@ -140,6 +140,17 @@ impl Worker {
 }
 
 pub fn not_paired(dir: &str) -> String {
+    // a pairing made as root and looked for as the person behind sudo, or the other way round,
+    // must not look like no pairing at all
+    if let Some(other) = config::other_place(dir) {
+        let whose = if plat::process::elevated() { "made without sudo: run this command without sudo, too" } else { "made as root: run this command with sudo, too" };
+        return format!("{} holds no pairing, but {} does (it was {}; or name the folder with --data)", dir, other, whose);
+    }
+    // root's folder cannot be looked into from outside; that it is there is enough for a hint
+    let system = plat::fs::parent(config::system_dir());
+    if !cfg!(windows) && !plat::process::elevated() && dir != config::system_dir() && plat::fs::stat(config::system_dir()).or_else(|| plat::fs::stat(system)).is_some() {
+        return format!("{} holds no pairing.  If this machine was paired with sudo, the pairing lies in {}: run this command with sudo, too", dir, config::system_dir());
+    }
     format!("this machine is not paired yet ({} has no worker.json): run `bb pair` on the main machine, then `bb-worker join RELAY CODE` here", dir)
 }
 

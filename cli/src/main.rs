@@ -195,26 +195,38 @@ fn setup(args: &[String]) -> CmdResult {
 fn pair(args: &[String], json: bool) -> CmdResult {
     let cli = parse(args, &["--minutes"], &[], &[], false)?;
     let mut ctx = ctx(&cli)?;
-    let minutes = cli.value("--minutes").and_then(|m| m.parse::<u32>().ok()).unwrap_or(10);
+    let minutes = cli.value("--minutes").and_then(|m| m.parse::<u32>().ok()).unwrap_or(ops::PAIR_MINUTES);
     let p = ops::pair_begin(&ctx, minutes)?;
     if json {
         // an agent shows this to its person and keeps waiting for the document that follows
         out(&format!("{}\n", j::text(&j::obj([("waiting", Value::Bool(true)), ("code", j::s(&p.code)), ("relay", j::s(&p.relay)), ("run_on_worker", j::s(&p.command)), ("minutes", j::n(p.minutes as u64))]))));
     } else {
         out(&format!(
-            "On the machine that should lend its power, run:\n\n    {}\n\n(or start the Build Balancer app there and enter the relay {} and the code {}.)\nThe code works once, for {} minutes.\nwaiting ...\n",
-            p.command, p.relay, p.code, p.minutes
+            "On the machine that should lend its power, run:\n\n    {}\n\nIt pairs the machine and starts lending right away.  (Or start the Build Balancer app there and\nenter the relay {} and the code {}.)\n\nNo program on that machine yet?  {}\n\nThe code works once, for {} minutes.\nwaiting ...\n",
+            p.command, p.relay, p.code, install_hint(&p), p.minutes
         ));
     }
+    // say now and then how long the code still works: getting the program over can take a while
+    let mut told = p.minutes;
     let worker = loop {
         if let Some(w) = ops::pair_poll(&mut ctx, &p, 20)? {
             break w;
         }
+        let left = (p.deadline.saturating_sub(bb_core::util::tick_ms()) / 60_000) as u32;
+        if !json && left < told && (left % 5 == 0 || left <= 2) && left > 0 {
+            told = left;
+            out(&format!("... {} minute{} left for the code\n", left, if left == 1 { "" } else { "s" }));
+        }
     };
     Ok(Reply::ok(
-        format!("Paired: \"{}\" ({}/{}, host {}).\nIt works once the worker is started there (`bb-worker run`, its service, or the app); `bb workers` shows it.\n", worker.name, worker.os, worker.arch, worker.host),
+        format!("Paired: \"{}\" ({}/{}, host {}).\nIt lends its power as soon as it runs there: `bb-worker join` goes on running by itself, so does the app.\n`bb workers` shows it.\n", worker.name, worker.os, worker.arch, worker.host),
         j::obj([("ok", Value::Bool(true)), ("worker", worker.to_json())]),
     ))
+}
+
+/// where the programs come from for a machine that has none yet
+fn install_hint(p: &ops::Pairing) -> String {
+    format!("This line fetches it first, then pairs:\n\n    Linux, macOS:  {}\n    Windows:       {}", p.install_line_sh(), p.install_line_powershell())
 }
 
 fn workers(args: &[String]) -> CmdResult {

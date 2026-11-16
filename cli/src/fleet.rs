@@ -175,6 +175,9 @@ pub fn view_json(v: &WorkerView) -> Value {
         ("arch", j::s(&v.paired.arch)),
         ("host", j::s(&v.paired.host)),
     ]);
+    if let Some(h) = hint(v) {
+        o.insert("hint", j::s(&h));
+    }
     let Some(s) = &v.status else { return o };
     let jobs = |list: &[bb_core::proto::JobBrief]| Value::Array(list.iter().map(|b| b.to_json()).collect());
     o.insert("version", j::s(&s.version));
@@ -248,6 +251,25 @@ pub fn table(views: &[WorkerView]) -> String {
                 out += &format!("  {} {} ({}): {}\n", b.state, b.id, b.project, b.command);
             }
         }
+        if let Some(h) = hint(v) {
+            out += &format!("\n{}: {}\n", v.paired.name, h);
+        }
     }
     out
+}
+
+/// what to do about a worker that is not there (None: it is)
+pub fn hint(v: &WorkerView) -> Option<String> {
+    let host = if v.paired.host.is_empty() { v.paired.name.as_str() } else { v.paired.host.as_str() };
+    if !v.admitted {
+        return Some(String::from("it was removed at the relay; `bb unpair` takes it off this list, `bb pair` adds it anew"));
+    }
+    if v.online {
+        return None;
+    }
+    Some(if v.idle_secs < 0 {
+        format!("paired, but it never came online.  Nothing runs there yet: start `bb-worker run` on {host} (or the app, or `sudo bb-worker service install` to have it start with the machine)")
+    } else {
+        format!("offline for {}.  Is {host} switched on, and does bb-worker run there (`bb-worker service status`, or the app)?", bb_core::util::dur_text(v.idle_secs as u64 * 1000))
+    })
 }

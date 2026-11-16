@@ -2,14 +2,19 @@
 // Balancer app does the same with a window)
 //
 //   bb-worker join RELAY CODE [--name NAME] [--cpu N|P%] [--ram SIZE|P%] [--disk SIZE|P%] [--jobs N] [--force]
-//   bb-worker run
+//                                           pair with a main machine and start lending right away
+//                                           (--no-run: pair only)
+//   bb-worker run                           lend, in this terminal
 //   bb-worker config [--cpu ..] [--ram ..] [--disk ..] [--jobs N] [--priority low|normal]
 //                    [--keep-days N] [--tags a,b] [--tools x,y] [--name NAME]      (no option: show)
 //   bb-worker status
 //   bb-worker tools                         the build tools jobs can use on this machine
 //   bb-worker clean [PROJECT | --all]       remove a project's files here (no argument: list them)
 //   bb-worker leave [--purge]               forget the pairing (--purge: and every file kept here)
-//   bb-worker service install | uninstall | start | stop | status
+//   bb-worker service install [--user NAME | --as-root]    lend whenever the machine runs.  Linux:
+//                                           the service runs as you (the one who calls sudo), on
+//                                           your pairing and with your PATH -- as root only on request
+//   bb-worker service uninstall | start | stop | status
 //   bb-worker --version | --help                                (every command takes --data DIR)
 //
 // A worker opens no port.  It asks the relay for orders (a long poll), runs jobs of the one
@@ -30,6 +35,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use bb_core::util::{out, size_text, tick_ms, Cli};
+use bb_exec::svc;
 use bb_worker::engine::not_paired;
 use bb_worker::{cleanup, config, engine, join};
 
@@ -40,8 +46,8 @@ const SERVICE: &str = if cfg!(windows) {
 } else {
     "buildbalancer-worker"
 };
-const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools"];
-const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--force", "--service", "--all", "--purge"];
+const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user"];
+const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root"];
 
 fn fail(s: &str) -> i32 {
     plat::log_error("worker", s);
@@ -50,14 +56,16 @@ fn fail(s: &str) -> i32 {
 
 fn usage() -> i32 {
     out("bb-worker join RELAY CODE [--name NAME] [--cpu N|P%] [--ram SIZE|P%] [--disk SIZE|P%] [--jobs N] [--force]\n\
-         bb-worker run                      work until stopped\n\
+         \x20                                  pair with a main machine and start lending (--no-run: pair only)\n\
+         bb-worker run                      lend, in this terminal, until stopped\n\
          bb-worker config [--cpu ..] [--ram ..] [--disk ..] [--jobs N] [--priority low|normal]\n\
          \x20                [--keep-days N] [--tags a,b] [--tools x,y] [--name NAME]     show or change what is lent\n\
          bb-worker status\n\
          bb-worker tools                    the build tools jobs can use on this machine\n\
          bb-worker clean [PROJECT | --all]  remove a project's files here (no argument: list them)\n\
          bb-worker leave [--purge]          forget the pairing (--purge: and every file kept here)\n\
-         bb-worker service install | uninstall | start | stop | status\n\
+         bb-worker service install [--user NAME | --as-root]   lend whenever the machine runs\n\
+         bb-worker service uninstall | start | stop | status\n\
          bb-worker --version\n\
          (every command: --data DIR)\n\
          \n\
@@ -85,10 +93,7 @@ fn run() -> i32 {
     let dir = config::data_dir(&cli);
     match cli.pos.first().map(String::as_str).unwrap_or("") {
         "join" => match join::join(&cli, &dir) {
-            Ok(m) => {
-                out(&m);
-                0
-            }
+            Ok(c) => joined(&cli, &dir, &c),
             Err(e) => fail(&e),
         },
         "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || engine::run(&config::data_dir(&Cli::parse(&plat::args()[1..], VALUED, &[], false).unwrap_or_default()))),
@@ -110,6 +115,34 @@ fn run() -> i32 {
         "service" => service_cmd(&cli, &dir),
         _ => usage(),
     }
+}
+
+/// After a pairing: say what was agreed, and start lending -- a machine that joined and then
+/// does nothing looks broken from the main machine ("never seen online").
+fn joined(cli: &Cli, dir: &str, c: &config::Config) -> i32 {
+    out(&format!(
+        "\nPaired with \"{}\" as worker \"{}\" ({}).\n\nThis machine lends:\n{}  change it any time:  bb-worker config --cpu 6 --ram 12G --disk 40G\n\n",
+        c.main_name,
+        c.name,
+        c.id,
+        config::offer_text(c)
+    ));
+    if !cfg!(windows) && plat::process::elevated() {
+        out("Note: this pairing was made as root, so jobs of the main machine run as root here.  Pair without\nsudo (`bb-worker leave`, then `bb-worker join ...`) to run them as yourself.\n\n");
+    }
+    // by its full path: sudo has a PATH of its own, without ~/.local/bin
+    let exe = plat::current_exe().unwrap_or_else(|| String::from("bb-worker"));
+    let service = if cfg!(windows) { String::from("bb-worker service install   (in a terminal run as administrator)") } else { format!("sudo {} service install", exe) };
+    if svc::installed(SERVICE) {
+        out(&format!("The service {} is installed: restart it so that it works with this pairing\n(`bb-worker service stop`, then `bb-worker service start`).\n", SERVICE));
+        return 0;
+    }
+    if cli.flag("--no-run") {
+        out(&format!("Nothing runs yet.  Start lending:\n  bb-worker run                 in this terminal, or\n  {}\n", service));
+        return 0;
+    }
+    out(&format!("This machine lends its power now, for as long as this terminal stays open (Ctrl+C ends it).\nTo lend whenever the machine runs:  {}\n\n", service));
+    engine::run(dir)
 }
 
 fn config_cmd(cli: &Cli, dir: &str) -> i32 {
@@ -140,7 +173,7 @@ fn project_lines(dir: &str) -> String {
 
 fn status_cmd(dir: &str) -> i32 {
     let Some(c) = config::load(dir) else { return fail(&not_paired(dir)) };
-    out(&format!("worker \"{}\" ({})\n  main machine {}\n  relay        {}\n  data folder  {}\n  service      {}\n{}projects here:\n{}", c.name, c.id, c.main_name, c.relay, dir, plat::service::state(SERVICE).text(), config::offer_text(&c), project_lines(dir)));
+    out(&format!("worker \"{}\" ({})\n  main machine {}\n  relay        {}\n  data folder  {}\n  service      {}\n{}projects here:\n{}", c.name, c.id, c.main_name, c.relay, dir, svc::state_text(SERVICE), config::offer_text(&c), project_lines(dir)));
     0
 }
 
@@ -217,25 +250,79 @@ fn leave_cmd(cli: &Cli, dir: &str) -> i32 {
     }
 }
 
+/// Who the service runs as, on which data folder and with which PATH.  Linux: as the person
+/// who installs it -- the one behind sudo, or --user NAME -- on that person's pairing, so jobs
+/// have that person's rights and tools and not root's; as root only with --as-root.  Windows
+/// and macOS: the system's service account (LocalSystem, root), as JFLib installs it.
+fn service_place(cli: &Cli, dir: &str) -> Result<(String, Option<svc::User>, Option<String>), String> {
+    if !cfg!(target_os = "linux") || cli.flag("--as-root") {
+        config::load(dir).ok_or_else(|| not_paired(dir))?;
+        return Ok((String::from(dir), None, None));
+    }
+    let user = match cli.value("--user") {
+        Some(name) => svc::user_named(name).ok_or_else(|| format!("this machine has no user \"{}\"", name))?,
+        None => match svc::sudo_user() {
+            Some(u) => u,
+            None if plat::process::elevated() => {
+                return Err(String::from(
+                    "as root the service would run every job of the main machine as root.  Name the user the jobs should run as:\n\n    bb-worker service install --user NAME\n\n(the pairing has to be that user's: `bb-worker join` run as NAME) -- or pass --as-root if root is what you want.",
+                ));
+            }
+            None => return Err(String::from("this needs root rights: run it again with sudo (the service will run as you, not as root)")),
+        },
+    };
+    let dir = cli.value("--data").map(bb_core::util::abs_path).unwrap_or_else(|| svc::user_data_dir(&user, "worker"));
+    if config::load(&dir).is_none() {
+        return Err(if config::load(config::system_dir()).is_some() {
+            format!(
+                "this machine was paired as root (the pairing lies in {}), so its jobs would run as root.\nPair it as {} instead -- `bb-worker join RELAY CODE` without sudo -- or pass --as-root.",
+                config::system_dir(),
+                user.name
+            )
+        } else {
+            format!("{} has no pairing in {}: run `bb-worker join RELAY CODE` as {} first (without sudo)", user.name, dir, user.name)
+        });
+    }
+    let path = svc::login_path(&user);
+    Ok((dir, Some(user), Some(path)))
+}
+
+fn install_service(cli: &Cli, dir: &str) -> Result<String, String> {
+    let exe = plat::current_exe().ok_or("the program's own path is unknown")?;
+    let (dir, user, path) = service_place(cli, dir)?;
+    let args = alloc::vec![String::from("run"), String::from("--service"), String::from("--data"), dir.clone()];
+    let service = svc::Service {
+        name: SERVICE,
+        display: "Build Balancer Worker",
+        description: "Build Balancer: runs build jobs of the paired main machine within the limits set with bb-worker config",
+        exe: &exe,
+        args: &args,
+        user: user.as_ref(),
+        path: path.as_deref(),
+    };
+    svc::install(&service).and_then(|_| svc::start(SERVICE))?;
+    let who = match &user {
+        Some(u) => format!(
+            "Jobs run as {}, with the PATH of {}'s login shell (so rustup, pipx and the like are found):\n  {}\nTools installed later into ~/.cargo/bin or ~/.local/bin are found as well; for anything else,\ninstall the service again.",
+            u.name,
+            u.name,
+            path.as_deref().unwrap_or("")
+        ),
+        None => format!(
+            "Jobs run as the service's account ({}): tools that live only in your own user profile\n(rustup, nvm ...) are not on its PATH.",
+            if cfg!(windows) { "LocalSystem" } else { "root" }
+        ),
+    };
+    Ok(format!("service {} installed and started: this machine lends its power whenever it runs (data: {})\n{}\n`bb workers` on the main machine shows the machine and the tools it found.", SERVICE, dir, who))
+}
+
 fn service_cmd(cli: &Cli, dir: &str) -> i32 {
     let r = match cli.pos.get(1).map(String::as_str).unwrap_or("status") {
-        "install" => (|| {
-            config::load(dir).ok_or_else(|| not_paired(dir))?;
-            let exe = plat::current_exe().ok_or("the program's own path is unknown")?;
-            let args = alloc::vec![String::from("run"), String::from("--service"), String::from("--data"), String::from(dir)];
-            let spec = plat::service::ServiceSpec { name: SERVICE, display: "Build Balancer Worker", description: "Build Balancer: runs build jobs of the paired main machine within the limits set with bb-worker config", exe: &exe, args: &args };
-            plat::service::install(&spec).and_then(|_| plat::service::start(SERVICE))?;
-            Ok(format!(
-                "service {} installed and started (data: {})\nJobs now run as the service's user ({}): tools that live only in your own\nuser profile (rustup, nvm ...) are not on its PATH -- `bb workers` on the main machine shows what it finds.",
-                SERVICE,
-                dir,
-                if cfg!(windows) { "LocalSystem" } else { "root" }
-            ))
-        })(),
-        "uninstall" => plat::service::uninstall(SERVICE).map(|_| format!("service {} removed (pairing and workspaces stay)", SERVICE)),
-        "start" => plat::service::start(SERVICE).map(|_| format!("service {} started", SERVICE)),
-        "stop" => plat::service::stop(SERVICE).map(|_| format!("service {} stopped", SERVICE)),
-        "status" => Ok(format!("service {}: {}", SERVICE, plat::service::state(SERVICE).text())),
+        "install" => install_service(cli, dir),
+        "uninstall" => svc::uninstall(SERVICE).map(|_| format!("service {} removed (pairing and workspaces stay)", SERVICE)),
+        "start" => svc::start(SERVICE).map(|_| format!("service {} started", SERVICE)),
+        "stop" => svc::stop(SERVICE).map(|_| format!("service {} stopped", SERVICE)),
+        "status" => Ok(format!("service {}: {}", SERVICE, svc::state_text(SERVICE))),
         _ => return usage(),
     };
     match r {

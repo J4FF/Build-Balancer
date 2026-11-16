@@ -1,0 +1,92 @@
+# The programs of a version, ready to fetch: pushing a tag like v0.1.0 builds them for Windows,
+# Linux and macOS, runs the smoke test on what was built, and publishes a release with one
+# archive per system, SHA256SUMS and the install scripts (install.sh, install.ps1 -- they fetch
+# from "the latest release", so a release is what makes the one-line install work).
+#
+# Started by hand (workflow_dispatch) it builds and tests the same archives and keeps them as
+# artifacts of the run, without publishing anything.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, ext: .exe }
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, ext: "" }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, ext: "" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }} --no-self-update
+          rustup default stable
+          rustc --version
+      - name: Build
+        run: cargo build --release --locked --workspace --target ${{ matrix.target }}
+      - name: A whole fleet on this machine, with what was built
+        run: sh tools/smoke.sh target/${{ matrix.target }}/release
+      - name: Pack
+        run: |
+          mkdir pack
+          for p in bb bb-worker bb-relay BuildBalancer; do
+            cp "target/${{ matrix.target }}/release/$p${{ matrix.ext }}" pack/
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE pack/
+          if [ "${{ matrix.ext }}" = .exe ]; then
+            (cd pack && 7z a -tzip "../buildbalancer-${{ matrix.name }}.zip" . >/dev/null)
+          else
+            tar -czf "buildbalancer-${{ matrix.name }}.tar.gz" -C pack .
+          fi
+          ls -l buildbalancer-*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: buildbalancer-${{ matrix.name }}
+          path: buildbalancer-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cp install.sh install.ps1 assets/
+          cd assets
+          sha256sum buildbalancer-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --title "Build Balancer ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag

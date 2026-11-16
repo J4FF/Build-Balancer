@@ -47,7 +47,7 @@ pub fn setup(dir: &str, addr: &str, key: &str, name: Option<&str>, force: bool) 
     }
     let (token, fp) = crypt::setup_key_decode(key).ok_or("this is not a setup key: copy the whole line bb-relay printed")?;
     let relay = Relay::open(addr, &fp, "", "").map_err(|e| if fp.is_empty() { format!("{} (a relay started with --plain is addressed as http://HOST:PORT)", e) } else { e })?;
-    let info = relay.info()?;
+    let info = relay.first_info()?;
     let mut m = old.unwrap_or_else(|| MainConfig { id: bb_core::util::new_id("m"), secret: Keys::generate().secret_hex(), data_key: crypto::hex(&plat::random_bytes::<32>()), ..MainConfig::default() });
     m.name = name.map(String::from).unwrap_or_else(|| if m.name.is_empty() { plat::net::hostname() } else { m.name.clone() });
     m.token = relay.claim(&token, &m.id, &m.name)?;
@@ -78,6 +78,23 @@ pub struct Pairing {
     key: [u8; 32],
 }
 
+impl Pairing {
+    /// One line for a Linux or macOS machine that has no Build Balancer yet: it fetches the
+    /// programs of the latest release, pairs and starts lending.
+    pub fn install_line_sh(&self) -> String {
+        format!("curl -fsSL {}/releases/latest/download/install.sh | sh -s -- worker {} {}", bb_core::REPOSITORY, self.relay, self.code)
+    }
+
+    /// the same for Windows (PowerShell)
+    pub fn install_line_powershell(&self) -> String {
+        format!("powershell -c \"& ([scriptblock]::Create((irm {}/releases/latest/download/install.ps1))) worker {} {}\"", bb_core::REPOSITORY, self.relay, self.code)
+    }
+}
+
+/// how long a pairing code works when nothing else is asked for: long enough to get the
+/// program onto the other machine first
+pub const PAIR_MINUTES: u32 = 30;
+
 pub fn pair_begin(ctx: &Ctx, minutes: u32) -> Result<Pairing, String> {
     let minutes = minutes.clamp(1, 60);
     let code = crypt::code_new();
@@ -89,7 +106,7 @@ pub fn pair_begin(ctx: &Ctx, minutes: u32) -> Result<Pairing, String> {
 
 /// a pairing for pictures: nothing is opened anywhere (the app's --demo)
 pub fn demo_pairing(relay: &str, code: &str) -> Pairing {
-    Pairing { code: String::from(code), relay: String::from(relay), command: format!("bb-worker join {} {}", relay, code), minutes: 10, deadline: tick_ms() + 600_000, slot: String::new(), key: [0; 32] }
+    Pairing { code: String::from(code), relay: String::from(relay), command: format!("bb-worker join {} {}", relay, code), minutes: PAIR_MINUTES, deadline: tick_ms() + PAIR_MINUTES as u64 * 60_000, slot: String::new(), key: [0; 32] }
 }
 
 /// Wait up to `wait` seconds for the machine with the code.  Ok(None): nobody yet (ask again
@@ -98,8 +115,8 @@ pub fn pair_poll(ctx: &mut Ctx, p: &Pairing, wait: u32) -> Result<Option<PairedW
     let sealed = match ctx.relay.pair_get(&p.slot, "worker", wait) {
         Ok(Some(b)) => b,
         Ok(None) if tick_ms() < p.deadline => return Ok(None),
-        Ok(None) => return Err(String::from("nobody joined in time; start a new pairing for a new code")),
-        Err(e) if e.status == 404 => return Err(String::from("the pairing expired; start a new one for a new code")),
+        Ok(None) => return Err(String::from("nobody joined in time, and the code is void now: run `bb pair` again for a new one")),
+        Err(e) if e.status == 404 => return Err(String::from("the code has expired: run `bb pair` again for a new one")),
         Err(e) => return Err(format!("{}", e)),
     };
     let hello = crypt::open(&p.key, &crypt::aad("worker", "pair"), &sealed).and_then(|b| j::parse(&b)).and_then(|v| Hello::from_json(&v)).ok_or("a message arrived that this code does not open: it was not written with the code (nothing was paired)")?;

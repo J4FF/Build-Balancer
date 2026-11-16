@@ -356,7 +356,7 @@ impl Gui {
             return;
         }
         let dir = self.main_dir.clone();
-        self.pair_begin = Some(ui.spawn(spawn_blocking(move || ops::pair_begin(&Ctx::load(&dir)?, 10))));
+        self.pair_begin = Some(ui.spawn(spawn_blocking(move || ops::pair_begin(&Ctx::load(&dir)?, ops::PAIR_MINUTES))));
     }
 
     pub fn pair_cancel(&mut self) {

@@ -56,6 +56,16 @@ fn fail<T>(status: u16, text: impl Into<String>) -> RelayResult<T> {
 
 /// An address as people type it ("relay.example.org", "10.0.0.5:7700", "https://host:port",
 /// "http://127.0.0.1:7700") -> "scheme://host:port".  https unless http is spelled out.
+/// What to tell someone whose first contact with a relay failed: a relay that runs behind a
+/// closed port looks healthy on the server and is not there for anyone else.
+pub fn unreachable_text(addr: &str, detail: &str) -> String {
+    let shown = addr.trim_start_matches("https://").trim_end_matches('/');
+    let port = shown.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()).unwrap_or(crate::DEFAULT_PORT);
+    format!(
+        "the relay at {shown} cannot be reached ({detail}).  Check, in this order:\n  1. Does it run?  On the server: bb-relay service status\n  2. Is TCP port {port} open in the server's firewall?  With ufw: sudo ufw allow {port}/tcp\n  3. At a hoster: is port {port} open in its firewall (security group) as well?\n  4. Is {shown} the address this machine reaches the server by?"
+    )
+}
+
 pub fn normalize_addr(addr: &str) -> Option<String> {
     let a = addr.trim().trim_end_matches('/');
     let (scheme, rest) = match a.split_once("://") {
@@ -138,13 +148,19 @@ impl Relay {
         Relay { session: Mutex::new(Session::new(client, base.clone())), base, pin, auth, seen }
     }
 
+    /// The relay's info for a first contact (setup, pairing).  A relay that does not answer
+    /// there is mostly a closed port, and the error says what to look at.
+    pub fn first_info(&self) -> Result<RelayInfo, String> {
+        self.info().map_err(|e| if e.status == 0 { unreachable_text(&self.address(), &e.text) } else { format!("{}", e) })
+    }
+
     /// The relay's info and the certificate it shows (hex; "" over http), without trusting it:
     /// what comes back is a claim until a pairing or a setup key confirms the fingerprint.
     pub fn probe(addr: &str) -> Result<(RelayInfo, String), String> {
         let norm = normalize_addr(addr).ok_or_else(|| format!("{} is not a relay address (host:port)", addr))?;
         let base = Url::parse(&format!("{}/", norm)).ok_or_else(|| format!("{} is not a relay address", addr))?;
         let r = Relay::build(base, None, String::new(), true);
-        let info = r.info()?;
+        let info = r.first_info()?;
         let fp = r.seen.lock().map(|d| crypto::hex(&d)).unwrap_or_default();
         Ok((info, fp))
     }

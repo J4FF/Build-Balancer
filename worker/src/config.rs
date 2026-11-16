@@ -70,6 +70,24 @@ pub fn default_dir() -> String {
     below(&base, "buildbalancer/worker")
 }
 
+/// the system's folder of a worker run by root
+pub fn system_dir() -> &'static str {
+    if cfg!(target_os = "macos") { "/Library/Application Support/BuildBalancer/worker" } else { "/var/lib/buildbalancer/worker" }
+}
+
+/// The folder that holds a pairing under the other identity: the system's when asked as the
+/// person who called sudo (or as a plain user), that person's when asked as root.
+pub fn other_place(dir: &str) -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    let mut places = alloc::vec![String::from(system_dir())];
+    if let Some(u) = bb_exec::svc::sudo_user() {
+        places.push(bb_exec::svc::user_data_dir(&u, "worker"));
+    }
+    places.into_iter().find(|p| p != dir && load(p).is_some())
+}
+
 pub fn data_dir(cli: &Cli) -> String {
     bb_core::util::abs_path(&cli.value("--data").map(String::from).unwrap_or_else(default_dir))
 }

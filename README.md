@@ -44,44 +44,82 @@ the tests pass there, but nobody has worked with it on a Mac yet.
 ## Set it up in three steps
 
 <p align="center">
-  <img src="docs/img/setup.svg" width="900" alt="1: start bb-relay and copy the line it prints. 2: on your main PC open BuildBalancer, choose This is my main machine and paste the line. 3: on every other PC open BuildBalancer, choose This machine lends power and enter the code your main PC shows.">
+  <img src="docs/img/setup.svg" width="900" alt="1: on the server, bb-relay service install prints one line. 2: on your main PC open BuildBalancer, choose This is my main machine and paste the line. 3: on every other PC open BuildBalancer, choose This machine lends power and enter the code your main PC shows.">
 </p>
 
-Nothing has to be installed: the programs are single files. Build them once (see
-[Building](#building) -- they land in `dist/`) and copy them to your machines.
+Nothing has to be installed first: the programs are single files, and one line fetches them
+from the [latest release](https://github.com/J4FF/Build-Balancer/releases/latest), checks them
+and puts them on your PATH.
 
-### 1. Start the relay
+| | |
+| --- | --- |
+| Linux, macOS | `curl -fsSL https://github.com/J4FF/Build-Balancer/releases/latest/download/install.sh \| sh` |
+| Windows (PowerShell) | `irm https://github.com/J4FF/Build-Balancer/releases/latest/download/install.ps1 \| iex` |
 
-The relay is the one address all your machines talk to. Run it on a small server -- or
-simply on your main PC when all machines are in the same network:
+The lines for the server and for the other machines below fetch the programs themselves.
+(No release for your system, or you would rather build: see [Building](#building).)
+
+### 1. The relay: one command on the server
+
+The relay is the one address all your machines talk to: a small server -- or simply your
+main PC when all machines are in the same network.
 
 ```sh
-./bb-relay
+curl -fsSL https://github.com/J4FF/Build-Balancer/releases/latest/download/install.sh | sudo sh -s -- relay
 ```
 
-It prints a line that starts with `bb setup`. **Copy that line** and leave the relay
-running (`bb-relay service install` keeps it running across restarts; it listens on port 7700).
+It installs the relay as a system service, starts it and prints a line that starts with
+`bb setup`. **Copy that line.** It stays valid until it is used, and `bb-relay status` shows
+it again.
 
-### 2. Set up your main PC
+The relay listens on TCP port 7700. If a firewall on the server (ufw, firewalld) has the port
+closed, the command says so and prints what opens it (`sudo ufw allow 7700/tcp`); at a hoster,
+open the port in its firewall (security group) as well. `bb setup` on the main machine tells
+you when it cannot get through.
 
-Open **BuildBalancer**, choose **This is my main machine**, paste the line into the first
-field and click **Set up**.
+### 2. Your main PC
 
-### 3. Add your other PCs
+Fetch Build Balancer (the line above), open **BuildBalancer**, choose **This is my main
+machine**, paste the line into the first field and click **Set up**.
+
+### 3. Your other PCs
 
 On the main PC open **Machines** and click **Add a machine**. It shows the relay's address
-and a code:
+and a code that works once, for 30 minutes:
 
-![The main machine shows the relay's address and a one-time code](docs/img/pairing.png)
+![The main machine shows the relay's address, a one-time code, and the line for a machine without Build Balancer](docs/img/pairing.png)
 
-On the other PC open **BuildBalancer**, choose **This machine lends power**, enter the
-address and the code, and click **Pair**:
+- **The other PC has nothing yet:** click **Copy for Linux and macOS** (or **Copy for
+  Windows**) and paste the line into a terminal there. It fetches Build Balancer, pairs the
+  machine and starts lending right away.
+- **Build Balancer is there already:** open **BuildBalancer** on it, choose **This machine
+  lends power**, enter the address and the code, and click **Pair** -- or run the line
+  `bb-worker join ...` in a terminal.
 
 ![The other machine: address, code, Pair](docs/img/connect.png)
 
 That is all. The machine shows up under **Machines** and stays paired; do the same on every
-PC that should help. How much of a PC may be used is set with the sliders on that PC
-(page **This machine**).
+PC that should help. A machine that was paired but shows as "never online" has nothing
+running yet: `bb workers` says what to start.
+
+A machine lends power while the app's window is open or `bb-worker join` / `bb-worker run`
+runs in a terminal. To lend whenever the machine is switched on:
+
+```sh
+sudo bb-worker service install      # Linux, macOS;  Windows: in a terminal run as administrator
+```
+
+On Linux the service runs **as you**, not as root: jobs get your rights, your pairing and
+your PATH (so `~/.cargo/bin` and the like are found). How much of a PC may be used is set
+with the sliders on that PC (page **This machine**) or with `bb-worker config`.
+
+### Install what your builds need
+
+A worker runs your build commands itself, so the compiler and tools have to be on it: for a
+Rust project on Debian, for example, `sudo apt install build-essential pkg-config` and
+[rustup](https://rustup.rs). **Machines** (or `bb workers`) lists the tools each machine has,
+and the app marks a task that needs a tool no machine has. Tools installed later are found by
+themselves within half an hour, or at once when the worker is started again.
 
 ### Build something
 
@@ -100,16 +138,24 @@ bb run -w laptop --out "target/release/app" -- cargo build --release     # ... a
 ```
 
 <details>
-<summary><b>The whole setup without a window</b> (servers, SSH, scripts)</summary>
+<summary><b>The whole setup without a window, and without the install script</b></summary>
 
 ```sh
-./bb-relay                                            # 1  prints: bb setup ADDRESS KEY
-bb setup relay.example.org:7700 KEY                   # 2  on the main machine: the line the relay printed
+sudo ./bb-relay service install                       # 1  on the server: prints  bb setup ADDRESS KEY
+bb setup relay.example.org:7700 KEY                   # 2  on the main machine: that line
 bb pair                                               # 3  on the main machine: prints the next line, with a code
-bb-worker join relay.example.org:7700 K7QF-2M9X-PD4T  #    on the machine that lends power
-bb-worker run                                         #    ... or: bb-worker service install
+bb-worker join relay.example.org:7700 K7QF-2M9X-PD4T  #    on the other machine: pairs and starts lending
+sudo bb-worker service install                        #    ... to lend whenever that machine runs
 bb workers                                            # on the main machine: who is there, what they lend
 ```
+
+Copying the programs by hand: `scp bb-relay SERVER:` with the same name for the server you
+use with `ssh` (a key that is set for a `Host` alias in `~/.ssh/config` only works with that
+alias), then `chmod +x bb-relay` there -- a copy loses the permission to run.
+
+`./bb-relay` without `service install` runs the relay in the terminal, for as long as the
+terminal is open: good for trying it out. Installing the service later keeps the same data
+folder and the same setup line, whoever started it first.
 
 </details>
 
@@ -140,7 +186,7 @@ jobs an agent starts through `bb` show up in the window too.
 ![The page "Jobs": every job with its state, its result and the end of its output](docs/img/jobs.png)
 
 The worker inside the app runs while the window is open. For a machine nobody is logged in
-to, use `bb-worker service install` instead. `BuildBalancer --demo` shows the app with
+to, use `sudo bb-worker service install` instead. `BuildBalancer --demo` shows the app with
 made-up machines and contacts nothing.
 
 ## Working with it
@@ -291,7 +337,7 @@ be reached at the time.
   every file are sealed between main machine and worker (X25519, XChaCha20-Poly1305); file
   content is addressed by a keyed hash, so the relay cannot even test a guess of a file
   against what it stores. It can drop or delay data; it cannot read, forge or change it.
-- **Pairing.** The code (60 random bits, valid once, ten minutes) is stretched with Argon2id
+- **Pairing.** The code (60 random bits, valid once, for 30 minutes by default) is stretched with Argon2id
   into the meeting point at the relay and the key of the two pairing messages. The worker
   compares the relay certificate it sees with the one the main machine pinned: someone in
   between is noticed and nothing is kept.
@@ -322,7 +368,13 @@ folder without blanks for the Linux build -- JFLib 0.2.1's build helper splits a
 argument there ([fixed upstream](https://github.com/JFLibrary/JFLib/pull/8) for the release
 after it). The build scripts do that by themselves.
 
-`tools/smoke.sh [FOLDER]` runs a whole fleet on one machine in about a minute, and
+A version is released by pushing a tag (`git tag v0.1.0 && git push origin v0.1.0`): the
+workflow `.github/workflows/release.yml` builds the programs for the three systems, runs the
+smoke test on them and publishes them with `SHA256SUMS` and the install scripts.
+
+`tools/smoke.sh [FOLDER]` runs a whole fleet on one machine in about a minute,
+`tools/install-test.sh FOLDER` lets the install script fetch a release made on the spot,
+`tools/service-test.sh FOLDER` installs the services for real (Linux, a throwaway machine), and
 `BuildBalancer --demo --script gui/tests/demo.uis` walks through the app's pages without a
 display (its pictures go to `target/shots/`, which has to exist); the CI (`.github/workflows/ci.yml`) does both on Windows, Linux and macOS.
 
@@ -381,6 +433,12 @@ link, very large projects.
   limits work as elsewhere.
 - The worker inside the desktop app runs while its window is open; there is no tray icon
   yet. Use the service for machines that should always help.
+- The worker's service runs as you on Linux. On Windows it runs as LocalSystem and on macOS
+  as root: jobs have that account's rights there and do not see tools installed for your user
+  only (rustup in your profile). On those systems the app, or `bb-worker run` in a terminal,
+  is the better choice for now.
+- Releases have programs for Linux and Windows on x86-64 and for macOS on Apple silicon. Other
+  systems (a Raspberry Pi, an Intel Mac) build from the source.
 
 ## License
 

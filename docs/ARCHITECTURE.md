@@ -52,6 +52,41 @@ key; the nonce is derived from the id. Equal content therefore gives the equal b
 once, an upload can be repeated), and the relay cannot test a guess of a file against an id.
 After decryption the content must hash to the id it was asked for by.
 
+## Setting a relay up
+
+A relay nobody took yet has a setup key: 16 random bytes and, for a relay with TLS, the
+fingerprint of its certificate. The relay keeps the key's hash (`setup.hash`), which the
+claim compares, and the key itself (`setup.key`, readable by its owner only) -- so that it
+shows the same line at every start, in `bb-relay status` and after `bb-relay service
+install`, until a main machine has used it. A line that was copied stays good when the
+terminal is closed or the service is installed in between. The claim removes both files.
+A running relay also notes the address it tells the other machines (`address`), which is
+where `status` and `service install` have the setup line's address from.
+
+## Services
+
+`bb-relay service install` and `bb-worker service install` make the programs start with the
+machine. What runs as a service is the same program with `run --service --data FOLDER`; who
+runs it is decided so that nothing changes hands and no job gets more rights than the person
+who set the machine up:
+
+| | Runs as | Data folder |
+| --- | --- | --- |
+| Relay, Linux | the owner of its data folder: a relay first started by hand keeps running as that user; a new one runs as root | the folder that holds a relay already (the caller's, found through `SUDO_USER`, or the system's), else `/var/lib/buildbalancer/relay` |
+| Worker, Linux | the person who installs it (the one behind `sudo`, or `--user NAME`); as root only with `--as-root` | that user's `~/.local/share/buildbalancer/worker`, where `bb-worker join` put the pairing |
+| Windows | LocalSystem | the folder of the user who installs |
+| macOS | root | `/Library/Application Support/BuildBalancer` |
+
+On Linux the unit is JFLib's (`plat::service::unit_text`) with three lines added
+(`bb_exec::svc`): `User=`, `WorkingDirectory=` and, for the worker, `Environment=PATH=` with
+the PATH of that user's login shell (`su - USER -c 'printenv PATH'`) plus `~/.cargo/bin` and
+`~/.local/bin`, so a job finds what its owner installed for themselves. A relay or a pairing
+that exists under the other identity (made with sudo and asked for without, or the other way
+round) is named in the error instead of being treated as missing.
+
+`bb-worker join` pairs and then goes on as `bb-worker run`: a machine that joined is online
+without a second command (`--no-run` only pairs).
+
 ## Pairing
 
 ```

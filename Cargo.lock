@@ -39,6 +39,7 @@ name = "bb-relay"
 version = "0.1.0"
 dependencies = [
  "bb_core",
+ "bb_exec",
  "jflib-agent-core",
  "jflib-base",
  "jflib-build",

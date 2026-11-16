@@ -120,6 +120,9 @@ Neues Gerät koppeln	Pair a new machine
 Auf dem anderen Gerät Build Balancer starten, „Dieses Gerät verleiht Leistung“ wählen und eintragen:	On the other machine, start Build Balancer, choose “This machine lends power” and enter:
 Ohne Fenster geht es mit einer Zeile im Terminal: {}	Without a window, one line in a terminal does it: {}
 Zeile kopieren	Copy the line
+Noch kein Build Balancer auf dem Gerät? Eine Zeile lädt es herunter und koppelt gleich:	No Build Balancer on that machine yet? One line downloads it and pairs right away:
+Für Linux und macOS kopieren	Copy for Linux and macOS
+Für Windows kopieren	Copy for Windows
 Kopiert	Copied
 Abbrechen	Cancel
 Wartet auf das Gerät … der Code gilt noch {} Minuten, einmal.	Waiting for the machine … the code works for {} more minutes, once.
@@ -180,6 +183,9 @@ Zurückholen (Muster)	Bring back (patterns)
 Ausführen	Run
    ·   braucht {}	   ·   needs {}
    ·   bringt {} zurück	   ·   brings {} back
+Kein Gerät hat „{}“. Dort installieren – die Geräte finden es danach von selbst.	No machine has “{}”. Install it there – the machines find it by themselves afterwards.
+Gerade kann kein Gerät diese Aufgabe übernehmen – unter „Geräte“ steht, was fehlt.	No machine can take this task right now – “Machines” shows what is missing.
+fehlt	missing
 Starten	Start
 Kopplung aufheben?	Unpair?
 Dieses Gerät vergisst das Hauptgerät, und alles, was Build Balancer hier abgelegt hat, wird entfernt: Projekte, Protokolle, Einstellungen. Laufende Aufträge werden abgebrochen.	This machine forgets the main machine, and everything Build Balancer has put here is removed: projects, logs, settings. Running jobs are cancelled.
