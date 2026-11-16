@@ -84,6 +84,21 @@ the PATH of that user's login shell (`su - USER -c 'printenv PATH'`) plus `~/.ca
 that exists under the other identity (made with sudo and asked for without, or the other way
 round) is named in the error instead of being treated as missing.
 
+`service install` on a machine that has the service installs nothing twice: it is what the
+install line ends in when it is run again to bring a machine up to date. The relay's
+service is stopped and started again with the program that is there now (a relay holds no
+job; the machines reconnect), keeps the settings it was installed with, and says what it
+runs -- a relay notes its version beside its address, so a service that starts another file
+than the one that was just replaced is seen. The worker's service is not stopped: a worker
+sees that its program was replaced and starts again once no job runs (Updating, below).
+
+On Windows the service does not start the program in the folder it was installed from but a
+copy in `%ProgramFiles%\<service>\` (JFLib: a program in a folder of the user's could be
+replaced by anything of that user's, and the service has the system's rights). An update of
+the programs leaves that copy as it was, so `service install` again, `bb-relay update` and
+`bb-worker update` put the new program there (`svc::refresh_program`): written over the old
+one, or, where that one runs, beside it after moving it aside.
+
 `bb-worker join` pairs and then goes on as `bb-worker run`: a machine that joined is online
 without a second command (`--no-run` only pairs).
 

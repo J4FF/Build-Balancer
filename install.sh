@@ -6,6 +6,7 @@
 #       only fetch the programs (bb, bb-worker, bb-relay, BuildBalancer)
 #   ... | sudo sh -s -- relay
 #       a server: install the relay as a service, start it, print the line for the main machine
+#       (run again on that server, it brings the relay up to date and starts it again)
 #   ... | sh -s -- worker RELAY CODE
 #       a machine that lends its power: pair with the code of the main machine, start lending
 #   ... | sh -s -- main RELAY KEY
@@ -92,6 +93,26 @@ esac
 
 action=${1:-}
 [ $# -gt 0 ] && shift
+
+# A relay or a worker that runs here as a service was started from the programs that were
+# just replaced, and is still the version from before.  (The relay action does this below:
+# `bb-relay service install` on a relay that has its service starts it again.)
+service_runs() { "$dir/$1" service status 2>/dev/null | grep -q ': running$'; }
+if [ "$action" != relay ] && service_runs bb-relay; then
+    if [ "$(id -u)" = 0 ]; then
+        # a relay holds no job: starting it again costs the machines a moment's reconnecting
+        "$dir/bb-relay" service install || say "Note: the relay's service was not started again with the new programs (see above)."
+    else
+        say "Note: the relay on this machine still runs the version from before.  This starts it again with the new one:"
+        say "      sudo $dir/bb-relay service install"
+    fi
+fi
+if service_runs bb-worker; then
+    say "Note: a worker runs here as a service.  It sees the new programs by itself and starts again with them"
+    say "      as soon as no job runs.  (One from before 0.1.2 does not; that one needs, once -- it ends a job"
+    say "      that runs:  sudo $dir/bb-worker service stop && sudo $dir/bb-worker service start)"
+fi
+
 case "$action" in
 "")
     say ""

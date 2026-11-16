@@ -75,6 +75,21 @@ if (-not $env:BB_NO_PATH) {
     catch { Write-Host "(No start menu entry was made: $($_.Exception.Message))" }
 }
 
+# A relay or a worker that runs here as a service still is the version from before: a service
+# starts a copy of its own of the program, which only an administrator may replace.
+function Test-ServiceRuns($program) {
+    try { [bool]((& (Join-Path $dir "$program.exe") service status 2>$null) -match ': running$') } catch { $false }
+}
+if ($Action -ne 'relay' -and (Test-ServiceRuns 'bb-relay')) {
+    Write-Host "Note: the relay on this machine still runs the version from before. In a terminal started with"
+    Write-Host "      `"Run as administrator`", this starts it again with the new one:  bb-relay service install"
+}
+if (Test-ServiceRuns 'bb-worker') {
+    Write-Host "Note: a worker runs here as a service, with the version from before. In a terminal started with"
+    Write-Host "      `"Run as administrator`", this hands it the new program:  bb-worker service install"
+    Write-Host "      (it then starts again by itself as soon as no job runs)"
+}
+
 switch ($Action) {
     '' {
         Write-Host ""
