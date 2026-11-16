@@ -436,8 +436,9 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
 
 **Not tested yet:**
 
-- The install lines against a release on GitHub: the tests let them fetch a release that
-  was packed on the spot.
+- The install lines for Linux and macOS against the release on GitHub: the tests let them
+  fetch a release that was packed on the spot. (The Windows line was run against release
+  0.1.0 by hand, and the smoke test passes with the programs it installed.)
 - The firewall hints: the code that reads ufw's and firewalld's state has not met a machine
   that runs one of them.
 - The services on Windows and macOS (on Linux the CI installs them).
