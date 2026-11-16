@@ -40,9 +40,10 @@ what every worker lends and is doing.
 - **No dependencies** beyond [JFLib](https://jflib.org): the programs are `no_std` Rust,
   link no C runtime and need nothing installed.
 
-Status: version 0.1 -- it works end to end on Windows and Linux (see [What is tested](#what-is-tested)),
-it is young, and the interface may still change. macOS is new: the CI builds it on a Mac and
-the tests pass there, but nobody has worked with it on a Mac yet.
+Status: version 0.1 -- it works end to end on Windows and Linux, and the CI tests it on
+Windows, Linux and macOS with every change (see [What is tested](#what-is-tested)). It is
+young: the interface may still change, no release has been published yet, and nobody has
+worked with it on a Mac beyond those tests.
 
 ## Set it up in three steps
 
@@ -406,32 +407,51 @@ The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Lin
 
 ## What is tested
 
-`tools/smoke.sh` -- on Windows 11 (x86-64), on Ubuntu under WSL 2 and, in the CI, on macOS
-(Apple silicon), each with relay, main machine and worker on the one machine: setup, pairing,
-a job with its output coming back, the exit code passing through, a changed file arriving, a
-missing program, a detached job and `wait`, removing a project from the main machine (`bb
-clean`) and on the worker (`bb-worker clean` through the running worker), and a worker that
-is killed while one job runs and another waits: the first is reported as interrupted, the
-second runs after the restart.
+**By the CI, on every change, on Windows, Linux and macOS (Apple silicon)** -- each with relay,
+main machine and worker on the one runner:
 
-The desktop app: `gui/tests/demo.uis` (every page, the one-click removal, a pairing) on
-Windows, on Linux (there also without any display) and in the CI on macOS; and by hand on
-Windows against a real relay: pairing through the window, a job on the worker inside the
-app, the project appearing and going with one click.
+- `tools/smoke.sh`: setup (also with a setup key that begins with a dash, and with the key a
+  relay showed before it was restarted), pairing, a machine that lends right after joining,
+  a job with its output coming back, the exit code passing through, a changed file arriving,
+  a missing program, a detached job and `wait`, removing a project from the main machine (`bb
+  clean`) and on the worker (`bb-worker clean` through the running worker), a worker that is
+  killed while one job runs and another waits (the first is reported as interrupted, the
+  second runs after the restart), and the hint for a machine that paired but never ran.
+- `tools/install-test.sh`: `install.sh` (Linux, macOS) and `install.ps1` (Windows) fetch a
+  release that was packed on the spot, check it and install it; a download that does not
+  match its checksum is refused.
+- The desktop app, `gui/tests/demo.uis`: every page, the one-click removal, a pairing --
+  without a display.
+- Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started
+  by hand keeps its data folder and its setup line when it is installed as a service; the
+  worker's service runs jobs as the person who installed it, with that person's PATH, in
+  that person's data folder; root has to say whom jobs run as; one command sets a server up.
 
-By hand, end to end, with an earlier state of the code (relay and main machine on Windows, a
-Windows and a Linux worker): sync (first, incremental, deletions, files of several chunks, 300
-small files), commands and scripts (cmd, PowerShell, sh), the time limit, CPU pinning (checked
-from inside the job on both systems), the memory limit (a job that allocates too much is ended
-on both systems), tasks at once in separate slots, worker choice by `needs`, the ignore rules,
-the MCP server, a relay restart while workers run.
+**By hand on Windows**, the app against a real relay: pairing through the window, a job on
+the worker inside the app, the project appearing and going with one click. And a relay that
+is away in the middle of a job, 20 000 lines of output, unpairing and pairing the same
+machine again.
 
-Not tested yet: **macOS beyond the CI** (nobody has looked at the app's window on a Mac, and
-the memory limit and low priority were not checked there), the system services (`service
-install`), the disk limit (making room, ending a job that grows too large), the relay's
-eviction of old blobs, the automatic removal of unused projects after days, Linux and
-Windows on aarch64, the app's live pages on Linux, a relay over the internet with a slow
-link, very large projects.
+**By hand, end to end, with an earlier state of the code** (relay and main machine on
+Windows, a Windows and a Linux worker): sync (first, incremental, deletions, files of several
+chunks, 300 small files), commands and scripts (cmd, PowerShell, sh), the time limit, CPU
+pinning (checked from inside the job on both systems), the memory limit (a job that allocates
+too much is ended on both systems), tasks at once in separate slots, worker choice by
+`needs`, the ignore rules, the MCP server, a relay restart while workers run.
+
+**Not tested yet:**
+
+- A real release: the release workflow has not run, and the install lines have only fetched
+  a release packed by the test, not one from GitHub.
+- The firewall hints: the code that reads ufw's and firewalld's state has not met a machine
+  that runs one of them.
+- The services on Windows and macOS (on Linux the CI installs them).
+- macOS beyond the CI: nobody has looked at the app's window on a Mac, and the memory limit
+  and low priority were not checked there.
+- The disk limit (making room, ending a job that grows too large), the relay's eviction of
+  old blobs, the automatic removal of unused projects after days.
+- Linux and Windows on aarch64, the app's live pages on Linux, a relay over the internet
+  with a slow link, very large projects.
 
 ## Known limits and plans
 
