@@ -283,6 +283,8 @@ pub fn order(kind: &str, fields: Value) -> Value {
 pub const ORDER_START: &str = "job.start";
 pub const ORDER_CANCEL: &str = "job.cancel";
 pub const ORDER_WS_REMOVE: &str = "ws.remove";
+/// bring the worker's programs up to the newest release and start again (when nothing runs)
+pub const ORDER_UPDATE: &str = "update";
 
 /// a job's states, in the order it passes through them
 pub const ST_SUBMITTED: &str = "submitted"; // sent to the relay, the worker has not answered yet

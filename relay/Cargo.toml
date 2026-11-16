@@ -23,6 +23,7 @@ netio.workspace = true
 agent_core.workspace = true
 bb_core.workspace = true
 bb_exec.workspace = true
+bb_update.workspace = true
 
 
 [build-dependencies]

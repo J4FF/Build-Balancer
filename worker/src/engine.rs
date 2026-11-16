@@ -19,7 +19,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering::Relaxed;
-use core::sync::atomic::{AtomicBool, AtomicU64};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8};
 
 use bb_core::client::Relay;
 use bb_core::crypt::{self, DataKey};
@@ -84,6 +84,9 @@ pub struct Worker {
     pub started: i64,
     /// set once: every thread of this engine ends
     pub stop: Arc<AtomicBool>,
+    /// Someone wants this worker to start again with newer programs (RESTART_*; 0: nobody).
+    /// Whoever runs the engine -- `bb-worker run`, the app -- acts on it when no job is here.
+    pub restart: AtomicU8,
     pub online: AtomicBool,
     meter: Mutex<CpuMeter>,
 }
@@ -137,6 +140,32 @@ impl Worker {
         self.release_removal(project_id, slot);
         r
     }
+}
+
+/// Worker::restart: fetch the newest release first, then start again (the main machine asked)
+pub const RESTART_UPDATE: u8 = 1;
+/// Worker::restart: the programs were replaced already, only start again (`bb-worker update`)
+pub const RESTART_ONLY: u8 = 2;
+/// what `run` returns when the program is to be started again: as a service the service
+/// manager does that for a program that ended with an error
+pub const EXIT_RESTART: i32 = 75;
+
+/// the file that asks the worker running on a data folder to start again (`bb-worker update`
+/// writes it after it replaced the programs)
+pub fn restart_request(dir: &str) -> String {
+    plat::fs::join(dir, "restart.request")
+}
+
+/// Bring the programs in this program's folder up to the newest release -> the version that
+/// was installed, or None when they are the newest already.
+pub fn update_programs(say: &mut dyn FnMut(&str)) -> Result<Option<String>, String> {
+    let c = bb_update::check()?;
+    if !c.newer {
+        return Ok(None);
+    }
+    let dir = bb_update::own_dir().ok_or("the program's own folder is unknown")?;
+    bb_update::install(&c.latest, &dir, say)?;
+    Ok(Some(c.latest))
 }
 
 pub fn not_paired(dir: &str) -> String {
@@ -196,6 +225,7 @@ impl Engine {
             state: Mutex::new(state),
             started: now(),
             stop: Arc::new(AtomicBool::new(false)),
+            restart: AtomicU8::new(0),
             online: AtomicBool::new(false),
             meter: Mutex::new(CpuMeter::default()),
         });
@@ -226,6 +256,12 @@ impl Engine {
         self.w.online.load(Relaxed)
     }
 
+    /// whether no job runs or waits here
+    pub fn idle(&self) -> bool {
+        let s = self.w.sched.lock();
+        s.running.is_empty() && s.queue.is_empty()
+    }
+
     /// remove a project's files here (Worker::remove_project)
     pub fn remove_project(&self, project_id: &str, slot: &str) -> Result<u64, String> {
         self.w.remove_project(project_id, slot)
@@ -252,7 +288,15 @@ impl Drop for Engine {
 
 /// `bb-worker run`: work until the system asks the program to stop -> the exit code
 pub fn run(dir: &str) -> i32 {
-    plat::log_file(Some(&plat::fs::join(&plat::fs::join(dir, "logs"), "worker.log")), 10 << 20, 3);
+    // (a worker that was started again after an update: the one before it may hold the log
+    // file for a moment longer)
+    let log = plat::fs::join(&plat::fs::join(dir, "logs"), "worker.log");
+    for _ in 0..30 {
+        if plat::log_file(Some(&log), 10 << 20, 3) {
+            break;
+        }
+        plat::sleep_ms(100);
+    }
     let e = match Engine::start(dir) {
         Ok(e) => e,
         Err(m) => {
@@ -264,8 +308,49 @@ pub fn run(dir: &str) -> i32 {
         let c = e.w.cfg.lock();
         bb_core::util::out(&format!("{} worker \"{}\" ({}) for main machine \"{}\" through {}\n{}", bb_core::PRODUCT, c.name, c.id, c.main_name, c.relay, config::offer_text(&c)));
     }
+    plat::log_info("worker", &format!("version {} started", bb_core::VERSION));
+    // an update that did not work is tried again a few times: a download can fail
+    let (mut tries, mut not_before) = (0u32, 0u64);
     while !plat::service::stop_requested() {
         plat::sleep_ms(300);
+        // a newer version: when nothing runs here, fetch it (if that is still to do) and start again
+        let want = e.w.restart.load(Relaxed);
+        if want != 0 && e.idle() && tick_ms() >= not_before {
+            e.w.restart.store(0, Relaxed);
+            let ready = match want {
+                RESTART_ONLY => true,
+                _ => match update_programs(&mut |m| plat::log_info("update", m)) {
+                    Ok(Some(v)) => {
+                        plat::log_info("update", &format!("version {} is installed", v));
+                        true
+                    }
+                    Ok(None) => {
+                        plat::log_info("update", "asked to update: this is the newest version already");
+                        false
+                    }
+                    Err(m) => {
+                        tries += 1;
+                        if tries < 4 {
+                            plat::log_warn("update", &format!("the update did not work, trying again in a minute: {}", m));
+                            not_before = tick_ms() + 60_000;
+                            e.w.restart.fetch_max(RESTART_UPDATE, Relaxed);
+                        } else {
+                            plat::log_warn("update", &format!("the update did not work, this version keeps running: {}", m));
+                            tries = 0;
+                        }
+                        false
+                    }
+                },
+            };
+            if ready {
+                plat::log_info("worker", "starting again with the new programs");
+                e.stop();
+                // The log file goes to whoever runs next.  While this program still holds it, the
+                // new one cannot open it and would run without a log for as long as it lives.
+                plat::log_file(None, 0, 0);
+                return EXIT_RESTART;
+            }
+        }
     }
     plat::log_info("worker", "stopping");
     e.stop();
@@ -290,6 +375,11 @@ fn scheduler(w: &Arc<Worker>) {
                     plat::log_warn("worker", &e);
                 }
             });
+            // `bb-worker update` replaced the programs and asks whoever runs here to start again
+            if plat::file_exists(&restart_request(&w.dir)) != 0 {
+                plat::delete(&restart_request(&w.dir));
+                w.restart.fetch_max(RESTART_ONLY, Relaxed);
+            }
         }
         if t >= next_tidy {
             next_tidy = t + 3_600_000;
@@ -586,6 +676,11 @@ fn order(w: &Arc<Worker>, v: &Value) {
                 Ok(bytes) => plat::log_info("worker", &format!("project {} removed on the main machine's request ({} freed)", project, size_text(bytes))),
                 Err(e) => plat::log_warn("worker", &e),
             }
+        }
+        proto::ORDER_UPDATE => {
+            plat::log_info("worker", "the main machine asks for the newest version: it is fetched as soon as no job is here");
+            w.restart.store(RESTART_UPDATE, Relaxed);
+            w.wake.notify_all();
         }
         other => plat::log_warn("worker", &format!("an order of unknown kind \"{}\" was dropped (a newer main machine?)", other)),
     }

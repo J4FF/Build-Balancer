@@ -22,6 +22,8 @@ base.workspace = true
 ui.workspace = true
 style.workspace = true
 bb_core.workspace = true
+bb_exec.workspace = true
+bb_update.workspace = true
 bb_worker.workspace = true
 bb_main.workspace = true
 

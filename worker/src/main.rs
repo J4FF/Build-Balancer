@@ -11,6 +11,9 @@
 //   bb-worker tools                         the build tools jobs can use on this machine
 //   bb-worker clean [PROJECT | --all]       remove a project's files here (no argument: list them)
 //   bb-worker leave [--purge]               forget the pairing (--purge: and every file kept here)
+//   bb-worker update [--check]              fetch the newest release and put it in this program's
+//                                           place; a worker that runs on the data folder starts
+//                                           again by itself
 //   bb-worker service install [--user NAME | --as-root]    lend whenever the machine runs.  Linux:
 //                                           the service runs as you (the one who calls sudo), on
 //                                           your pairing and with your PATH -- as root only on request
@@ -47,7 +50,7 @@ const SERVICE: &str = if cfg!(windows) {
     "buildbalancer-worker"
 };
 const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user"];
-const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root"];
+const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root", "--check"];
 
 fn fail(s: &str) -> i32 {
     plat::log_error("worker", s);
@@ -64,6 +67,7 @@ fn usage() -> i32 {
          bb-worker tools                    the build tools jobs can use on this machine\n\
          bb-worker clean [PROJECT | --all]  remove a project's files here (no argument: list them)\n\
          bb-worker leave [--purge]          forget the pairing (--purge: and every file kept here)\n\
+         bb-worker update [--check]         fetch the newest release; a running worker starts again by itself\n\
          bb-worker service install [--user NAME | --as-root]   lend whenever the machine runs\n\
          bb-worker service uninstall | start | stop | status\n\
          bb-worker --version\n\
@@ -90,14 +94,20 @@ fn run() -> i32 {
         }
     };
     plat::log_levels(plat::LOG_INFO, plat::LOG_INFO);
+    // what an update left behind: the files it replaced
+    if let Some(own) = bb_update::own_dir() {
+        bb_update::tidy(&own);
+    }
     let dir = config::data_dir(&cli);
     match cli.pos.first().map(String::as_str).unwrap_or("") {
         "join" => match join::join(&cli, &dir) {
             Ok(c) => joined(&cli, &dir, &c),
             Err(e) => fail(&e),
         },
+        // a service that is to start again ends with an error: its manager starts it anew
         "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || engine::run(&config::data_dir(&Cli::parse(&plat::args()[1..], VALUED, &[], false).unwrap_or_default()))),
-        "run" => engine::run(&dir),
+        "run" => again(engine::run(&dir), &rest),
+        "update" => update_cmd(&cli, &dir),
         "config" => config_cmd(&cli, &dir),
         "status" => status_cmd(&dir),
         "tools" => {
@@ -142,7 +152,60 @@ fn joined(cli: &Cli, dir: &str, c: &config::Config) -> i32 {
         return 0;
     }
     out(&format!("This machine lends its power now, for as long as this terminal stays open (Ctrl+C ends it).\nTo lend whenever the machine runs:  {}\n\n", service));
-    engine::run(dir)
+    // started again after an update, it is a plain `run`: the pairing is done
+    let mut args = alloc::vec![String::from("run")];
+    if let Some(d) = cli.value("--data") {
+        args.extend([String::from("--data"), String::from(d)]);
+    }
+    again(engine::run(dir), &args)
+}
+
+/// a worker in a terminal that is to start again with new programs: start them, end this one
+fn again(code: i32, args: &[String]) -> i32 {
+    if code != engine::EXIT_RESTART {
+        return code;
+    }
+    if bb_update::restart(args) {
+        return 0;
+    }
+    fail("the new version could not be started: start bb-worker run again")
+}
+
+/// bb-worker update [--check]
+fn update_cmd(cli: &Cli, dir: &str) -> i32 {
+    let c = match bb_update::check() {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    if !c.newer {
+        out(&format!("bb-worker {} is the newest version.\n", c.current));
+        return 0;
+    }
+    if cli.flag("--check") {
+        out(&format!("Version {} is available (this is {}): bb-worker update\n", c.latest, c.current));
+        return 0;
+    }
+    let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
+    if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
+        return fail(&e);
+    }
+    out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
+    // whoever lends on this data folder right now -- `bb-worker run`, the service, the app --
+    // holds its lock and starts again by itself when it is asked to
+    if config::load(dir).is_some() && plat::FileLock::acquire(&plat::fs::join(dir, "worker.lock")).is_none() {
+        if bb_core::util::put_file(&engine::restart_request(dir), b"1") {
+            out("The worker that runs here starts again with the new version as soon as it has no job.\n");
+        } else {
+            out("A worker runs here with the old version: start it again (the app, the service, or bb-worker run).\n");
+        }
+    } else if svc::installed(SERVICE) && plat::service::state(SERVICE) == plat::service::ServiceState::Running {
+        // the service of another data folder (another user's): with the rights for it, start it again
+        match svc::stop(SERVICE).and_then(|_| svc::start(SERVICE)) {
+            Ok(()) => out(&format!("The service {} was started again and runs the new version.\n", SERVICE)),
+            Err(_) => out(&format!("The service {} still runs the old version: `bb-worker service stop`, then `bb-worker service start`.\n", SERVICE)),
+        }
+    }
+    0
 }
 
 fn config_cmd(cli: &Cli, dir: &str) -> i32 {

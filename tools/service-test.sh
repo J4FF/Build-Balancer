@@ -48,18 +48,18 @@ check() { # description, expected, got
     fi
 }
 wait_for() { # seconds, command...
-    tries=$(($1 * 5))
+    # by the clock: on a busy machine every look takes its time, too
+    end=$(($(date +%s) + $1))
     shift
-    while [ "$tries" -gt 0 ]; do
+    while :; do
         got=$("$@" 2>/dev/null)
         if [ -n "$got" ]; then
             printf '%s' "$got"
             return 0
         fi
+        [ "$(date +%s)" -ge "$end" ] && return 1
         sleep 0.2
-        tries=$((tries - 1))
     done
-    return 1
 }
 die() {
     echo "FAIL  $1"

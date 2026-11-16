@@ -11,6 +11,8 @@
 //   bb sync [-w WORKER | --all]   send the project without running anything
 //   bb jobs | status JOB | logs JOB [-f] | wait JOB.. | cancel JOB | fetch JOB | forget JOB
 //   bb clean [-w WORKER | --all]  remove what a worker (every worker) keeps of the project
+//   bb update [--check] [-w WORKER | --workers | --all]   the newest release: for this machine,
+//                                 for workers (they fetch it themselves and start again), or both
 //   bb relay                      what the relay holds
 //   bb mcp                        the same as tools for an AI agent (Model Context Protocol on stdio)
 //   bb guide                      how an agent (or a person) works with bb
@@ -87,6 +89,8 @@ fn usage() -> String {
          bb fetch JOB [--to DIR]               bring its outputs here\n\
          bb forget JOB | --done                drop job records\n\
          bb clean [-w NAME | --all]            remove what a worker (--all: every worker) keeps of this project\n\
+         bb update [--check]                   fetch the newest release for this machine (--check: only look)\n\
+         bb update -w NAME | --workers | --all have a worker, all workers, or them and this machine update\n\
          \n\
          bb relay                              what the relay holds\n\
          bb mcp                                serve these as tools for an AI agent (MCP, stdio)\n\
@@ -98,6 +102,10 @@ fn usage() -> String {
 
 fn main_cmd() -> i32 {
     let args: Vec<String> = plat::args().iter().skip(1).cloned().collect();
+    // what an update left behind: the files it replaced
+    if let Some(own) = bb_update::own_dir() {
+        bb_update::tidy(&own);
+    }
     let Some(cmd) = args.first().map(String::as_str) else {
         out(&usage());
         return 2;
@@ -128,6 +136,7 @@ fn main_cmd() -> i32 {
         "fetch" => run::fetch(rest),
         "forget" => run::forget(rest),
         "clean" => run::clean(rest),
+        "update" => update(rest),
         "mcp" => {
             return match Cli::parse(rest, &["--config"], &[], false) {
                 Ok(c) => mcp::serve(&conf::config_dir(c.value("--config"))),
@@ -232,6 +241,46 @@ fn pair(args: &[String], json: bool) -> CmdResult {
 /// where the programs come from for a machine that has none yet
 fn install_hint(p: &ops::Pairing) -> String {
     format!("This line fetches it first, then pairs:\n\n    Linux, macOS:  {}\n    Windows:       {}", p.install_line_sh(), p.install_line_powershell())
+}
+
+/// bb update: the newest release for this machine, and the word to the workers to fetch it too
+fn update(args: &[String]) -> CmdResult {
+    let cli = parse(args, &["--worker"], &["--check", "--workers", "--all"], &[("-w", "--worker")], false)?;
+    let (one, every) = (cli.value("--worker"), cli.flag("--workers") || cli.flag("--all"));
+    let own = cli.flag("--all") || (one.is_none() && !every);
+    let c = bb_update::check()?;
+    let mut text = String::new();
+    let mut doc = j::obj([("current", j::s(&c.current)), ("latest", j::s(&c.latest)), ("newer", Value::Bool(c.newer))]);
+    if cli.flag("--check") {
+        text += &if c.newer { format!("Version {} is available (this is {}): bb update\n", c.latest, c.current) } else { format!("bb {} is the newest version.\n", c.current) };
+    } else if own {
+        if c.newer {
+            let dir = bb_update::own_dir().ok_or("the program's own folder is unknown")?;
+            bb_update::install(&c.latest, &dir, &mut |m| err(&format!("{} ...\n", m)))?;
+            text += &format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\nThe app and a worker that run on this machine use it once they are started again: the app\ndoes that itself from its settings, `bb-worker update` asks a running worker to.\n", c.latest, dir);
+            doc.insert("installed", j::s(&c.latest));
+        } else {
+            text += &format!("bb {} is the newest version.\n", c.current);
+        }
+    }
+    if !cli.flag("--check") && (one.is_some() || every) {
+        let ctx = ctx(&cli)?;
+        let asked: Vec<&conf::PairedWorker> = match one {
+            Some(w) => alloc::vec![ctx.worker(w)?],
+            None => ctx.workers.iter().collect(),
+        };
+        for w in &asked {
+            ops::ask_update(&ctx, w)?;
+        }
+        let names: Vec<&str> = asked.iter().map(|w| w.name.as_str()).collect();
+        if names.is_empty() {
+            text += "No worker is paired.\n";
+        } else {
+            text += &format!("Asked {} to fetch the newest version: each does it when it has no job, starts again and\nreports back (`bb workers` shows the version; one that is offline does it when it is back).\n", names.join(", "));
+        }
+        doc.insert("asked", j::strs(&names));
+    }
+    Ok(Reply::ok(text, doc))
 }
 
 fn workers(args: &[String]) -> CmdResult {

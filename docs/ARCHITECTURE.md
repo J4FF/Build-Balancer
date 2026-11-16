@@ -87,6 +87,39 @@ round) is named in the error instead of being treated as missing.
 `bb-worker join` pairs and then goes on as `bb-worker run`: a machine that joined is online
 without a second command (`--no-run` only pairs).
 
+## Updating
+
+`bb_update` is what every way of updating ends in -- the button in the app's settings, `bb
+update`, `bb-worker update`, `bb-relay update`, and the order `update` that the main machine
+sends a worker:
+
+1. **Which version is the newest:** `REPOSITORY/releases/latest/download/VERSION` (a release
+   from before that file existed is found through the address "the latest release" leads
+   to). https, checked against the system's certificate authorities.
+2. **Fetch:** `SHA256SUMS` and the archive of this system from
+   `REPOSITORY/releases/download/vVERSION/`. An archive that does not match its checksum is
+   dropped and nothing changes.
+3. **Replace** the four programs in the folder the running program lies in. The new files
+   are written beside the old ones first, then take their places: on Linux and macOS by a
+   rename (a program that runs keeps its old file), on Windows by moving the old file aside
+   (`bb.exe.old`; a running program can be renamed, not overwritten) -- those files go at a
+   later start.
+4. **Start again**, so the new version runs: the app starts the program that is in its
+   place now and closes (the new window waits for the old one to be gone, then lends and
+   reconnects as at every start); `bb-worker run` in a terminal does the same; as a service
+   it ends with an error code, and the service manager starts it again (systemd's
+   `Restart=on-failure`). A worker does all this only while it has no job.
+
+A worker learns that it should update in two ways: the order `update` in its inbox (sealed
+by the main machine like every order; workers before 0.1.2 do not know it and ignore it),
+or the file `restart.request` in its data folder, which `bb-worker update` writes after it
+replaced the programs. Either sets `Worker::restart`, and whoever runs the engine -- the
+app or `bb-worker run` -- acts on it.
+
+The main machine cannot choose what a worker installs: the worker fetches the release of
+the project itself. `BB_RELEASE_URL` names another place with `VERSION`, `SHA256SUMS` and
+the archives side by side (a mirror; the tests).
+
 ## Pairing
 
 ```

@@ -1,0 +1,26 @@
+[package]
+name = "bb_update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# a newer version of the programs: asked for at the project's releases, fetched, checked and
+# put in the place of the running ones
+
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+crypto.workspace = true
+netio.workspace = true
+archive.workspace = true
+img_core.workspace = true
+bb_core.workspace = true

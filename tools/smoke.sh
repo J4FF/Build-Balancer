@@ -50,18 +50,18 @@ winpid() { [ "$win" = 1 ] && cat "/proc/$1/winpid" 2>/dev/null; }
 # Wait until a command prints something (at most SECONDS) -> what it printed.  The programs
 # need a moment to start, and how long depends on the machine: nothing is read on a guess.
 wait_for() { # seconds, command...
-    tries=$(($1 * 5))
+    # by the clock: on a busy machine every look takes its time, too
+    end=$(($(date +%s) + $1))
     shift
-    while [ "$tries" -gt 0 ]; do
+    while :; do
         got=$("$@" 2>/dev/null)
         if [ -n "$got" ]; then
             printf '%s' "$got"
             return 0
         fi
+        [ "$(date +%s)" -ge "$end" ] && return 1
         sleep 0.2
-        tries=$((tries - 1))
     done
-    return 1
 }
 die() { # what is missing, the log that may say why
     echo "FAIL  $1"

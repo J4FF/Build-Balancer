@@ -29,6 +29,7 @@ crypto.workspace = true
 netio.workspace = true
 agent_core.workspace = true
 bb_core.workspace = true
+bb_update.workspace = true
 bb_sync.workspace = true
 bb_exec.workspace = true
 agent_io.workspace = true
