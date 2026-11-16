@@ -102,16 +102,21 @@ sends a worker:
    certificate authorities, and stays https wherever a server sends it on to; plain http
    is taken only from a place someone named with `BB_RELEASE_URL`.
 3. **Replace** the four programs in the folder the running program lies in -- all four or
-   none. One update at a time works in a folder (the lock `.buildbalancer-update.lock`). The
-   new files are written beside the old ones, and each old program stays within reach until
-   all four new ones are in place: on Windows the old file is moved aside (`bb.exe.old`; a
-   running program can be renamed, not overwritten), elsewhere it gets a second name and the
-   new file then takes the first (a running program must keep its name, or it could not find
-   the new one to start). If one of the four cannot be put in place, the others go back.
-   What is left over -- on Windows the replaced files until the programs that run from them
-   end, anywhere the pieces of an update that was cut short -- is cleared away when a program
-   starts, which also puts a program back that such an update took out of its place; while
-   an update is at work in the folder, that tidying keeps its hands off.
+   none. One update at a time works in a folder: it holds the lock on
+   `.buildbalancer-update.lock`, a file that stays there between updates (a lock is on the
+   file, not on its name) and belongs to whoever the folder belongs to. The new files are
+   written beside the old ones. Then the update writes down what it is about to do
+   (`.buildbalancer-update.journal`: each program and the name its old file is kept under),
+   and only then puts the new files in place: on Windows the old file is moved aside
+   (`bb.exe.old`; a running program can be renamed, not overwritten), elsewhere it gets a
+   second name and the new file then takes the first (a running program must keep its name,
+   or it could not find the new one to start). When all four are in place the journal goes,
+   and from then on the update counts. If one of the four cannot be put in place, the others
+   go back. An update that was cut short -- the power, a kill -- leaves its journal, and
+   the next program that starts takes all of it back: two new programs beside two old ones
+   are worse than four old ones. The same start clears away what a finished update left (on
+   Windows the replaced files, once the programs that ran from them have ended); while an
+   update is at work in the folder, that tidying keeps its hands off.
 4. **Start again**, so the new version runs: the app starts the program that is in its
    place now and closes (the new window waits for the old one to be gone, then lends and
    reconnects as at every start); `bb-worker run` in a terminal does the same; as a service
@@ -124,13 +129,18 @@ taken and wait -- on disk, too -- and run after the restart, or at once when the
 did not happen. An update that fails (a download can) is tried again a few times, a minute
 apart.
 
-A worker learns that it should update in two ways: the order `update` in its inbox (sealed
-by the main machine like every order), or the file `restart.request` in its data folder,
-which `bb-worker update` writes -- "now" after it replaced the programs, else the version
-the programs have, so that a worker still running an older one starts again, too. Either
-sets `Worker::restart`, and whoever runs the engine -- the app or `bb-worker run` -- acts
-on it. Versions before 0.1.2 do not know the order: the main machine does not send it to
-them and says that those machines need the install line once more.
+A worker learns that it should update or start again in three ways. The order `update` in
+its inbox (sealed by the main machine like every order) has it fetch the release. The file
+`restart.request` in its data folder, which `bb-worker update` writes, has it start again
+with the programs that are there -- "now" after the command replaced them, else the version
+they have, so that a worker still running an older one starts again, too. And it sees by
+itself that another file has taken its program's place (`bb_update::replaced`): an update
+made from anywhere else -- `bb update`, the app, the install line, another user who cannot
+write to this worker's data folder -- needs no way to ask it, and a service is never
+stopped for an update, which would cut its jobs off. Each of the three sets
+`Worker::restart`, and whoever runs the engine -- the app or `bb-worker run` -- acts on it
+once no job runs. Versions before 0.1.2 know none of this: the main machine does not send
+them the order and says that those machines need the install line once more.
 
 The main machine cannot choose what a worker installs: the worker fetches the release of
 the project itself, and the word to a worker needs no way to the releases from the main
@@ -215,6 +225,12 @@ When a worker starts, jobs with only `spec.json` are queued again in their old o
 with `started` and no `done.json` was interrupted and ends as `error`; a result without
 `sent` is sent again, then and every half minute, until the relay takes it. Folders of jobs
 that ended a week ago are removed.
+
+An engine looks at those folders once, when it starts. So an engine that is stopped takes
+no job any more: the stop is set under the scheduler's lock, and `spec.json` is written and
+the job queued under it. An order that reached a stopped engine is not counted as read, and
+the next engine on the data folder -- in the app the one after the switch, elsewhere the
+program started again -- reads it and takes the job.
 
 A job's output never holds the job up: the loop that watches the process (pipes, limits,
 cancel) hands pieces to a thread that sends them. When the relay is away the pieces queue up

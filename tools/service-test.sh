@@ -111,6 +111,15 @@ check "... with that user's own tools on the PATH" 1 "$("$bb" run -q --no-sync -
 check "... in that user's data folder" 1 "$(ls -d "$own/worker/ws" 2>/dev/null | wc -l | tr -d ' ')"
 cd "$work" || exit 1
 
+# --- an update never stops the service: the worker sees that another file took its program's
+# place (here a copy of itself), ends with an error once no job runs, and systemd starts it
+starts() { grep -c "version .* started" "$own/worker/logs/worker.log" 2>/dev/null; }
+started_again() { [ "$(starts)" -ge 2 ] && echo yes; }
+cp "$bin/bb-worker" "$bin/bb-worker.next" && mv "$bin/bb-worker.next" "$bin/bb-worker"
+check "the worker's service starts again by itself when its program is replaced" yes "$(wait_for 60 started_again)"
+wait_for 40 online >/dev/null
+check "... and runs jobs again" "$me" "$(cd "$work/proj" && "$bb" run -q --no-sync --sh 'id -un' 2>/dev/null)"
+
 sudo "$bin/bb-worker" service uninstall >/dev/null
 check "bb-worker service uninstall" 0 $?
 sudo "$bin/bb-relay" service uninstall >/dev/null

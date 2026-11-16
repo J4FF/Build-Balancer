@@ -7,6 +7,9 @@
 //   own_dir()                    the folder the running program lies in
 //   restart(args)                start the program file that is there now, with these arguments
 //   tidy(dir)                    remove what an update left behind (the files it replaced)
+//   at_start()                   for every program's start: tidy its folder, and remember the
+//                                file it runs from
+//   replaced()                   whether an update has put another file in that one's place
 //
 // Where it asks: REPOSITORY/releases/latest/download/VERSION names the newest version (a
 // release from before that file existed is found through the address of "the latest release"),
@@ -20,8 +23,10 @@
 //
 // The four programs of a folder belong together.  One update at a time works in a folder (a
 // lock file says so, and the tidying of a program that starts meanwhile leaves its files
-// alone); the old programs stay within reach until all four new ones are in place, and are
-// put back when one of them cannot be -- also by tidy(), when an update was cut short.
+// alone).  An update writes down what it is about to do before it does it, keeps the old
+// programs within reach until all four new ones are in place, and puts them back when one
+// cannot be.  One that was cut short -- its note is still there -- is taken back whole by
+// the next program that starts (tidy).
 #![no_std]
 
 extern crate alloc;
@@ -31,6 +36,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use netio::{Client, Headers, Url};
+use plat::sync::Mutex;
 
 /// the first version that can update itself: older programs do not know the order to
 pub const FIRST: &str = "0.1.2";
@@ -251,9 +257,95 @@ fn fresh(dir: &str, file: &str) -> String {
     plat::fs::join(dir, &format!(".{}.new", file))
 }
 
-/// the file whose lock says: an update is at work in this folder
+/// The file whose lock says: an update is at work in this folder.  It stays where it is,
+/// also between updates: a lock is on the file, not on its name, and a name that went away
+/// and came back would give two updates a lock each.
 fn lock_path(dir: &str) -> String {
     plat::fs::join(dir, ".buildbalancer-update.lock")
+}
+
+/// Take the folder's lock -> None: another update holds it, or the file is not this user's
+/// to open.  The file is handed to the folder's owner, writable for those the folder is
+/// writable for: who may replace the programs may take the lock, also after root was here
+/// once (`sudo bb-relay update` with the programs in a folder of the user's).
+fn lock(dir: &str) -> Option<plat::FileLock> {
+    let path = lock_path(dir);
+    let plain = |m: &plat::fs::Meta| m.kind == Some(plat::fs::FileKind::File);
+    // (anything but a plain file under this name is not ours, and is not followed anywhere)
+    if plat::fs::lstat(&path).is_some_and(|m| !plain(&m)) {
+        return None;
+    }
+    let lock = plat::FileLock::acquire(&path)?;
+    if cfg!(windows) {
+        // (no dot hides a file there)
+        plat::fs::set_attrs(&path, 0x2);
+    } else if let (Some(folder), Some(file)) = (plat::fs::stat(dir), plat::fs::lstat(&path))
+        && plain(&file)
+    {
+        if (file.uid, file.gid) != (folder.uid, folder.gid) {
+            plat::fs::set_owner(&path, folder.uid, folder.gid);
+        }
+        let mode = 0o600 | (folder.mode & 0o066);
+        if file.mode & 0o7777 != mode {
+            plat::fs::set_mode(&path, mode);
+        }
+    }
+    Some(lock)
+}
+
+/// The file that says what an update is about to do, written before it does it and removed
+/// when all of it is done: one line per program, "FILE<tab>THE NAME ITS OLD ONE IS KEPT UNDER"
+/// (nothing after the tab: there was no such program).  As long as it is there, the update
+/// did not get through, and everything it names can be taken back.
+fn journal_path(dir: &str) -> String {
+    plat::fs::join(dir, ".buildbalancer-update.journal")
+}
+
+/// (program file, the name its old one is kept under or "") for each line of a journal that
+/// names one of the programs and a name of the kind an update gives -> None: it cannot be read
+fn journal(dir: &str) -> Option<Vec<(String, String)>> {
+    let text = plat::read_file(&journal_path(dir))?;
+    let text = String::from_utf8_lossy(&text).into_owned();
+    let kept_name = |file: &str, old: &str| {
+        let Some(rest) = old.strip_prefix(file).and_then(|r| r.strip_prefix(".old")) else { return false };
+        rest.is_empty() || rest.strip_prefix('.').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    Some(
+        text.lines()
+            .filter_map(|l| l.split_once('\t'))
+            .filter(|(file, old)| PROGRAMS.iter().any(|p| file_name(p) == *file) && (old.is_empty() || kept_name(file, old)))
+            .map(|(file, old)| (String::from(file), String::from(old)))
+            .collect(),
+    )
+}
+
+/// Take back an update that did not get through: every program it names as it was before.
+fn roll_back(dir: &str, plan: &[(String, String)]) {
+    for (file, old) in plan {
+        let target = plat::fs::join(dir, file);
+        if old.is_empty() {
+            // there was no such program before: none stays
+            plat::delete(&target);
+            continue;
+        }
+        let kept = plat::fs::join(dir, old);
+        // (no such file: the update had not come to this program yet)
+        if plat::file_exists(&kept) == 0 {
+            continue;
+        }
+        let mut back = plat::rename(&kept, &target);
+        if !back && cfg!(windows) {
+            // Windows writes over no program that runs -- but that one can be moved out of
+            // the way (and goes at a later start)
+            plat::rename(&target, &aside(dir, file));
+            back = plat::rename(&kept, &target);
+        }
+        // Elsewhere the two can be names of one file (the update had not put the new one
+        // there yet), and renaming the one onto the other leaves both.
+        if back && !cfg!(windows) {
+            plat::delete(&kept);
+        }
+    }
 }
 
 /// what an update left in a folder: (program file, the programs kept from before, a new one not yet in place)
@@ -269,20 +361,28 @@ fn leftovers(dir: &str) -> Vec<(String, Vec<String>, Option<String>)> {
         .collect()
 }
 
-/// Clear away what an update left behind in a folder: the programs it replaced (a program
-/// that still runs from one keeps it until it ends), files of an update that did not finish.
-/// A program that an update cut short took out of its place is put back.  While an update is
-/// at work in the folder, nothing is touched.
+/// Clear away what an update left behind in a folder.  One that got through leaves the
+/// programs it replaced (Windows: a program that still runs from one keeps it until it ends).
+/// One that was cut short -- its journal is still there -- is taken back whole: the programs
+/// of a folder belong together, and two new ones beside two old ones are worse than four
+/// old ones.  While an update is at work in the folder, nothing is touched.
 pub fn tidy(dir: &str) {
-    let left = leftovers(dir);
-    if left.is_empty() {
+    let cut_short = plat::file_exists(&journal_path(dir)) != 0;
+    if !cut_short && leftovers(dir).is_empty() {
         return;
     }
     // (a folder this user may not write to: there is nothing to do here either way)
-    let Some(lock) = plat::FileLock::acquire(&lock_path(dir)) else { return };
-    for (file, mut old, new) in left {
+    let Some(_lock) = lock(dir) else { return };
+    // (looked at again, now that no update can be in the middle of it)
+    if plat::file_exists(&journal_path(dir)) != 0 {
+        // One that cannot be read is another user's: theirs to take back, and until then
+        // nothing here is touched -- the old programs it kept are all there is to go back to.
+        let Some(plan) = journal(dir) else { return };
+        roll_back(dir, &plan);
+    }
+    for (file, mut old, new) in leftovers(dir) {
         let target = plat::fs::join(dir, &file);
-        // an update that ended between moving the program aside and putting the new one there
+        // a program that is in no place at all, and one kept from before: back with it
         if plat::file_exists(&target) == 0
             && let Some(last) = old.pop()
         {
@@ -292,8 +392,7 @@ pub fn tidy(dir: &str) {
             plat::delete(&path);
         }
     }
-    drop(lock);
-    plat::delete(&lock_path(dir));
+    plat::delete(&journal_path(dir));
 }
 
 /// Put the programs of release `version` into `dir` -> the programs that were put there.
@@ -355,17 +454,22 @@ fn put(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
         )
     };
     tidy(dir);
-    let Some(lock) = plat::FileLock::acquire(&lock_path(dir)) else {
-        // no lock: another update works here right now, or the folder is not this user's
-        return Err(if plat::file_exists(&lock_path(dir)) != 0 { format!("another update is at work in {}: try again in a moment", dir) } else { denied("the programs") });
+    let Some(_lock) = lock(dir) else {
+        // No lock: another update works here right now -- or the folder, or the lock's file
+        // in it, is not this user's to write to, which says nothing about another update.
+        let probe = plat::fs::join(dir, ".buildbalancer-update.probe");
+        let writable = plat::write_file(&probe, b"");
+        plat::delete(&probe);
+        // (a lock that is held leaves its file to be opened; Windows holds one by having the
+        // file open alone, and there the two cannot be told apart)
+        let foreign = !cfg!(windows) && plat::File::open(&lock_path(dir), plat::FO_RW).is_none();
+        return Err(if writable && !foreign { format!("another update is at work in {}: try again in a moment", dir) } else { denied("the programs") });
     };
     let result = replace(dir, programs).map_err(|file| denied(&file));
     // what is left over now is this update's own: new files that did not get into place
     for (file, _) in programs {
         plat::delete(&fresh(dir, file));
     }
-    drop(lock);
-    plat::delete(&lock_path(dir));
     result
 }
 
@@ -377,62 +481,78 @@ fn replace(dir: &str, programs: &[(String, &[u8])]) -> Result<(), String> {
             return Err(file.clone());
         }
     }
-    // (the program, where the one before it is kept)
-    let mut done: Vec<(&String, Option<String>)> = Vec::new();
-    let undo = |done: &[(&String, Option<String>)]| {
-        for (file, old) in done.iter().rev() {
-            let target = plat::fs::join(dir, file);
-            match old {
-                // back to what was there
-                Some(old) => {
-                    if cfg!(windows) {
-                        plat::delete(&target);
-                    }
-                    plat::rename(old, &target);
-                }
-                // there was none before: none stays
-                None => {
-                    plat::delete(&target);
-                }
-            }
-        }
-    };
-    for (file, _) in programs {
+    // What is about to happen, on disk before it happens: (the program, the name its old one
+    // is kept under).  An update that ends here or anywhere below -- the power, a kill -- is
+    // taken back whole by the next program that starts (tidy).
+    let plan: Vec<(String, String)> = programs
+        .iter()
+        .map(|(file, _)| (file.clone(), if plat::file_exists(&plat::fs::join(dir, file)) != 0 { String::from(base_name(&aside(dir, file))) } else { String::new() }))
+        .collect();
+    let text: String = plan.iter().map(|(file, old)| format!("{}\t{}\n", file, old)).collect();
+    if !plat::write_file(&journal_path(dir), text.as_bytes()) {
+        return Err(programs[0].0.clone());
+    }
+    for (file, old) in &plan {
         let (target, new) = (plat::fs::join(dir, file), fresh(dir, file));
-        let old = (plat::file_exists(&target) != 0).then(|| aside(dir, file));
+        let kept_as = plat::fs::join(dir, old);
         // Windows: a program that runs cannot be written over, but it can be moved aside.
         // Elsewhere the old program gets a second name and the new one then takes the first:
         // a program that runs must keep its name, or it could not find the new one to start.
-        let kept = match &old {
-            None => true,
-            Some(o) if cfg!(windows) => plat::rename(&target, o),
-            Some(o) => plat::fs::hard_link(&target, o) || plat::read_file(&target).is_some_and(|b| plat::write_file(o, &b)),
+        let kept = if old.is_empty() {
+            true
+        } else if cfg!(windows) {
+            plat::rename(&target, &kept_as)
+        } else {
+            // (no second name for a file of another user's on most systems: a copy then)
+            plat::fs::hard_link(&target, &kept_as) || plat::read_file(&target).is_some_and(|b| plat::write_file(&kept_as, &b) && plat::fs::set_mode(&kept_as, 0o755))
         };
-        if !kept {
-            undo(&done);
+        if !kept || !plat::rename(&new, &target) {
+            roll_back(dir, &plan);
+            plat::delete(&journal_path(dir));
             return Err(file.clone());
         }
-        if !plat::rename(&new, &target) {
-            if cfg!(windows)
-                && let Some(o) = &old
-            {
-                plat::rename(o, &target);
-            }
-            undo(&done);
-            return Err(file.clone());
-        }
-        done.push((file, old));
     }
-    // All are in place.  Where the old programs are only second names (not the files that
-    // run), they can go now; on Windows they go at a later start.
+    // All four are in place: from here on the update counts.
+    plat::delete(&journal_path(dir));
+    // Where the old programs are only second names (not the files that run), they can go
+    // now; on Windows they go at a later start.
     if !cfg!(windows) {
-        for (_, old) in done {
-            if let Some(o) = old {
-                plat::delete(&o);
-            }
+        for (_, old) in plan.iter().filter(|(_, old)| !old.is_empty()) {
+            plat::delete(&plat::fs::join(dir, old));
         }
     }
     Ok(())
+}
+
+/// the file this program runs from, as at_start() found it: (path, device, file, written)
+static SELF: Mutex<Option<(String, u64, u64, i64)>> = Mutex::new(None);
+/// For a program's start: remember the file it runs from, and clear away what an update left
+/// in its folder.
+pub fn at_start() {
+    let Some(exe) = plat::current_exe() else { return };
+    // Linux names a program that was replaced while it runs "PATH (deleted)"
+    let exe = String::from(exe.strip_suffix(" (deleted)").unwrap_or(&exe));
+    if let Some(m) = plat::fs::stat(&exe) {
+        *SELF.lock() = Some((exe.clone(), m.dev, m.ino, m.mtime_ns));
+    }
+    let dir = plat::fs::parent(&exe);
+    if !dir.is_empty() {
+        tidy(dir);
+    }
+}
+
+/// Whether an update that got through has put another file in this program's place since
+/// at_start(): what runs is then not what a new start would run.  Whoever made that update --
+/// `bb update`, the app, an installer, another user -- need not know of this program.
+pub fn replaced() -> bool {
+    let Some((path, dev, ino, written)) = SELF.lock().clone() else { return false };
+    // (an update that is still at work, or one that is about to be taken back: not yet)
+    if plat::file_exists(&journal_path(plat::fs::parent(&path))) != 0 {
+        return false;
+    }
+    // another file, written at another time (where a file system has no lasting numbers for
+    // its files, the time alone says that nothing happened)
+    plat::fs::stat(&path).is_some_and(|m| (m.dev, m.ino) != (dev, ino) && m.mtime_ns != written)
 }
 
 /// start the program file that is at this program's path now -- after an update the new one --

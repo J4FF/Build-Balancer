@@ -103,9 +103,7 @@ fn usage() -> String {
 fn main_cmd() -> i32 {
     let args: Vec<String> = plat::args().iter().skip(1).cloned().collect();
     // what an update left behind: the files it replaced
-    if let Some(own) = bb_update::own_dir() {
-        bb_update::tidy(&own);
-    }
+    bb_update::at_start();
     let Some(cmd) = args.first().map(String::as_str) else {
         out(&usage());
         return 2;

@@ -194,9 +194,12 @@ sudo bb-relay update      # on the server: the programs, and the service starts 
 
 Every way does the same thing: it asks the project's releases on GitHub for the newest
 version, fetches the archive for this system over https, checks it against the release's
-`SHA256SUMS`, and replaces the four programs in the folder the running one lies in. Versions
-before 0.1.2 cannot do this yet: bring them up to date once more with the install line of
-the setup above.
+`SHA256SUMS`, and replaces the four programs in the folder the running one lies in -- all
+four or none: an update that is cut short is taken back by the next program that starts. A
+worker that is running while its programs are replaced, by whichever way, sees it and
+starts again by itself as soon as no job runs; no update stops a job. Versions before 0.1.2
+cannot do this yet: bring them up to date once more with the install line of the setup
+above.
 
 ## The desktop app
 
@@ -418,7 +421,7 @@ The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Lin
 | --- | --- |
 | `tools/smoke.sh [FOLDER]` | a whole fleet on one machine in about a minute: relay, main machine, worker, jobs, cleaning up, restarts |
 | `tools/install-test.sh FOLDER` | packs a release on the spot and lets `install.sh` / `install.ps1` fetch, check and install it into a temporary folder |
-| `tools/update-test.sh FOLDER` | a "newer release" made on the spot: `bb update` installs it, a worker asked by the main machine fetches it and starts again by itself, a download that does not match its checksum changes nothing |
+| `tools/update-test.sh FOLDER` | a "newer release" made on the spot: `bb update` installs it, a worker asked by the main machine fetches it and starts again by itself, a job that runs meanwhile runs to its end, an update that was cut short is taken back, a download that does not match its checksum changes nothing |
 | `tools/service-test.sh FOLDER` | installs the relay and the worker as services for real (Linux only; for a CI runner or a throwaway machine, as it needs root and removes Build Balancer's data folders) |
 | `BuildBalancer --demo --script gui/tests/demo.uis` | walks through the app's pages without a display (its pictures go to `target/shots/`, which has to exist) |
 
@@ -454,8 +457,10 @@ main machine and worker on the one runner:
 - `tools/update-test.sh`: the programs updating themselves against a release packed on the
   spot -- `bb update` replaces all four programs, a worker that the main machine asks to
   update (also when the main machine itself cannot reach the releases) fetches the release
-  and starts again by itself, `bb-worker update` with a worker running, a download that
-  does not match its checksum.
+  and starts again by itself, `bb-worker update` with a worker running, a job that runs
+  when the update is asked for (it runs to its end, one that arrives meanwhile runs after
+  the restart), a worker whose programs someone else's update replaced, an update that was
+  cut short, a download that does not match its checksum.
 - The desktop app, `gui/tests/demo.uis`: every page, the one-click removal, a pairing --
   without a display.
 - Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started
@@ -485,8 +490,10 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
 - The firewall hints: the code that reads ufw's and firewalld's state has not met a machine
   that runs one of them.
 - The services on Windows and macOS (on Linux the CI installs them), and with them a
-  service that starts again after an update: on Linux the service manager does that, on
-  Windows `bb-worker update` in a terminal run as administrator starts it again.
+  service that starts again after an update: the worker ends with an error once no job runs
+  and leaves the starting to the service manager (systemd's `Restart=on-failure`, launchd's
+  `KeepAlive`, the restart-on-failure setting of a Windows service). Only systemd has been
+  seen to do it.
 - An update from a real release on GitHub: the tests update from a release packed on the
   spot. The first release that can be updated to is the one after 0.1.2.
 - macOS beyond the CI: nobody has looked at the app's window on a Mac, and the memory limit

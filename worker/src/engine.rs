@@ -100,6 +100,16 @@ impl Worker {
         self.stop.load(Relaxed) || plat::service::stop_requested()
     }
 
+    /// Tell this engine to stop.  Under the scheduler's lock, which a job is taken under as
+    /// well (take_job): once this returns, the engine writes no job to the disk any more, so
+    /// the next engine on this data folder finds there all that was ever taken.
+    fn end(&self) {
+        let s = self.sched.lock();
+        self.stop.store(true, Relaxed);
+        drop(s);
+        self.wake.notify_all();
+    }
+
     /// whether a job runs in a project's workspace right now (`slot` "": in any of its slots)
     pub fn busy(&self, project_id: &str, slot: &str) -> bool {
         self.sched.lock().running.iter().any(|r| r.spec.project_id == project_id && (slot.is_empty() || r.spec.slot == slot))
@@ -298,11 +308,11 @@ impl Engine {
     }
 
     /// End the engine: running jobs are stopped and reported as cancelled, the scheduler is
-    /// waited for.  (The inbox thread may still wait at the relay for some seconds; it does
-    /// nothing more when it comes back.)
+    /// waited for.  (The inbox thread may still wait at the relay for some seconds.  It is not
+    /// waited for: from here on it takes no job and leaves the orders it reads to the next
+    /// engine -- see Worker::end and take_job.)
     pub fn stop(mut self) {
-        self.w.stop.store(true, Relaxed);
-        self.w.wake.notify_all();
+        self.w.end();
         if let Some(t) = self.thread.take() {
             t.join();
         }
@@ -311,8 +321,7 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.w.stop.store(true, Relaxed);
-        self.w.wake.notify_all();
+        self.w.end();
     }
 }
 
@@ -399,6 +408,8 @@ fn scheduler(w: &Arc<Worker>) {
     // an end is told again once the job's own attempt (five minutes at most) is surely over
     let mut resend_age = 0i64;
     let mut online: Option<bool> = None;
+    // this program's file was seen to be replaced (said and acted on once)
+    let mut replaced = false;
     while !w.stopping() {
         let t = tick_ms();
         if t >= next_cfg {
@@ -416,6 +427,14 @@ fn scheduler(w: &Arc<Worker>) {
                 if restart_asked(&String::from_utf8_lossy(&text)) {
                     w.restart.fetch_max(RESTART_ONLY, Relaxed);
                 }
+            }
+            // ... and nobody needs to ask: an update made from anywhere else -- `bb update`,
+            // the app, an installer, another user who cannot write to this data folder -- put
+            // another file in this program's place, and that is seen here
+            if !replaced && bb_update::replaced() {
+                replaced = true;
+                plat::log_info("update", "the programs were replaced by a newer version");
+                w.restart.fetch_max(RESTART_ONLY, Relaxed);
             }
         }
         if t >= next_tidy {
@@ -669,9 +688,18 @@ fn inbox(w: &Arc<Worker>) {
                     continue;
                 }
                 for (seq, sealed) in msgs {
+                    if w.stopping() {
+                        break;
+                    }
                     match crypt::open(&w.pair, &aad, &sealed).and_then(|p| j::parse(&p)) {
                         Some(v) => order(w, &v),
                         None => plat::log_warn("worker", "an order that does not open was dropped (not from the paired main machine)"),
+                    }
+                    // Stopped while the order was looked at: a job in it may not have been
+                    // taken (take_job).  The order is not counted as read, and the next
+                    // engine reads it again -- one that was taken is known by its folder.
+                    if w.stopping() {
+                        break;
                     }
                     w.state.lock().inbox_after = seq;
                 }
@@ -766,21 +794,30 @@ fn take_job(w: &Arc<Worker>, spec: JobSpec) {
         job::refuse(w, &spec, proto::ST_ERROR, &why);
         return;
     }
-    // on disk before it is queued: a job that waits survives a restart of the worker
+    // On disk before it is queued: a job that waits survives a restart of the worker.  Both
+    // under the scheduler's lock, which an engine is stopped under (Worker::end): the next
+    // engine on this data folder looks at the disk once, when it starts, and a job written
+    // after that would wait there until the worker starts yet again.
+    let mut s = w.sched.lock();
+    if w.stop.load(Relaxed) {
+        drop(s);
+        // not taken: the order stays unread (inbox), and whoever reads it next takes the job
+        w.state.lock().seen.retain(|id| *id != spec.id);
+        return;
+    }
     if !bb_core::util::put_file(&spec_path, j::pretty(&spec.to_json()).as_bytes()) {
+        drop(s);
         job::refuse(w, &spec, proto::ST_ERROR, "the worker could not write the job to its disk");
         return;
     }
-    let detail = {
-        let mut s = w.sched.lock();
-        if s.has(&spec.id) {
-            return;
-        }
-        let ahead = s.queue.len() + s.running.len();
-        s.queue.push_back(spec.clone());
-        s.dirty = true;
-        if ahead == 0 { String::new() } else { format!("{} job(s) ahead on this worker", ahead) }
-    };
+    if s.has(&spec.id) {
+        return;
+    }
+    let ahead = s.queue.len() + s.running.len();
+    s.queue.push_back(spec.clone());
+    s.dirty = true;
+    drop(s);
+    let detail = if ahead == 0 { String::new() } else { format!("{} job(s) ahead on this worker", ahead) };
     plat::log_info("job", &format!("{} queued: {}", spec.id, spec.command_text()));
     job::Emitter::new(w, &spec.main, &spec.id).send(&Event::State { state: String::from(proto::ST_QUEUED), detail, time: now() }, 20);
     w.wake.notify_all();

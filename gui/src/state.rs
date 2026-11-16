@@ -60,6 +60,8 @@ pub struct Gui {
     upd_ordered: bool,
     upd_tries: u32,
     upd_retry_at: u64,
+    /// this window could not start itself again (it said so, and does not try over and over)
+    restart_failed: bool,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -134,6 +136,7 @@ impl Gui {
             upd_install: None,
             upd_waiting: false,
             upd_ordered: false,
+            restart_failed: false,
             upd_tries: 0,
             upd_retry_at: 0,
             nav: NavState::default(),
@@ -282,6 +285,7 @@ impl Gui {
             ui.quit();
         } else {
             ui.toast(IB_WARNING, t("Update eingespielt"), t("Build Balancer konnte sich nicht selbst neu starten: bitte schließen und wieder öffnen."), 0);
+            self.restart_failed = true;
             if self.wcfg.is_some() {
                 self.set_lending(true);
             }
@@ -321,6 +325,13 @@ impl Gui {
             return;
         }
         if self.engine.is_some() {
+            return;
+        }
+        if self.upd_install.is_some() {
+            // The programs are being replaced: an engine started now would not know of it,
+            // and a job it took would be cut off by the restart.  The window that starts
+            // after the update lends again.
+            self.lend = 0;
             return;
         }
         if self.winding.as_ref().is_some_and(|w| !w.sched.lock().running.is_empty()) {
@@ -589,8 +600,10 @@ impl Gui {
         }
         let wanted = self.engine.as_ref().map_or(0, |e| e.w.restart.load(core::sync::atomic::Ordering::Relaxed));
         if wanted == bb_worker::engine::RESTART_ONLY {
-            // the programs were replaced already: start again as soon as no job runs
-            if self.engine.as_ref().is_some_and(|e| e.hold()) {
+            // the programs were replaced already -- by `bb-worker update`, `bb update`, an
+            // installer --: start again as soon as no job runs (an update of this window's
+            // own ends in a restart by itself)
+            if self.upd_install.is_none() && !self.restart_failed && self.engine.as_ref().is_some_and(|e| e.hold()) {
                 self.restart_app(ui);
                 return;
             }

@@ -291,9 +291,7 @@ fn run() -> i32 {
     }
     plat::log_levels(plat::LOG_INFO, plat::LOG_INFO);
     // what an update left behind: the files it replaced
-    if let Some(own) = bb_update::own_dir() {
-        bb_update::tidy(&own);
-    }
+    bb_update::at_start();
     match cli.pos.first().map(String::as_str).unwrap_or("run") {
         "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || serve_from_args()),
         "run" => serve(&cli),

@@ -146,9 +146,7 @@ fn run() -> i32 {
         }
     }
     // what an update left behind: the files it replaced
-    if let Some(own) = bb_update::own_dir() {
-        bb_update::tidy(&own);
-    }
+    bb_update::at_start();
     let mut g = Gui::new(args.value("--config"), args.value("--data"), args.flag("--demo"));
     g.updated = updated.is_some();
     ui::launch(&DESC.translated(), g, &style::STYLE)

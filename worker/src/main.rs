@@ -95,17 +95,23 @@ fn run() -> i32 {
     };
     plat::log_levels(plat::LOG_INFO, plat::LOG_INFO);
     // what an update left behind: the files it replaced
-    if let Some(own) = bb_update::own_dir() {
-        bb_update::tidy(&own);
-    }
+    bb_update::at_start();
     let dir = config::data_dir(&cli);
     match cli.pos.first().map(String::as_str).unwrap_or("") {
         "join" => match join::join(&cli, &dir) {
             Ok(c) => joined(&cli, &dir, &c),
             Err(e) => fail(&e),
         },
-        // a service that is to start again ends with an error: its manager starts it anew
-        "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || engine::run(&config::data_dir(&Cli::parse(&plat::args()[1..], VALUED, &[], false).unwrap_or_default()))),
+        // A service that is to start again ends with an error: its manager starts it anew.
+        // Windows does that only for a service whose program ends without having said that
+        // it stopped -- so there it ends right here, with nothing said.
+        "run" if cli.flag("--service") => plat::service::run_service(SERVICE, || {
+            let code = engine::run(&config::data_dir(&Cli::parse(&plat::args()[1..], VALUED, &[], false).unwrap_or_default()));
+            if cfg!(windows) && code == engine::EXIT_RESTART {
+                plat::exit(code);
+            }
+            code
+        }),
         "run" => again(engine::run(&dir), &rest),
         "update" => update_cmd(&cli, &dir),
         "config" => config_cmd(&cli, &dir),
@@ -201,14 +207,10 @@ fn update_cmd(cli: &Cli, dir: &str) -> i32 {
         }
         out(if c.newer { "The worker that runs here starts again with the new version as soon as no job runs.\n" } else { "A worker that still runs an older version here starts again as soon as no job runs.\n" });
     } else if c.newer && svc::installed(SERVICE) && plat::service::state(SERVICE) == plat::service::ServiceState::Running {
-        // the service of another data folder (another user's): with the rights for it, start it again
-        if let Err(e) = svc::stop(SERVICE) {
-            return fail(&format!("the service {} still runs the old version ({}): `bb-worker service stop`, then `bb-worker service start`", SERVICE, e));
-        }
-        if let Err(e) = svc::start(SERVICE) {
-            return fail(&format!("the service {} was stopped and could not be started again ({}): `bb-worker service start`", SERVICE, e));
-        }
-        out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
+        // The service lends on another data folder (another user's pairing).  It is not
+        // stopped -- that would cut its jobs off --, and needs no word: a worker sees that its
+        // program was replaced.
+        out(&format!("The service {} sees the new programs by itself and starts again with them as soon as no job runs.\n", SERVICE));
     }
     0
 }
