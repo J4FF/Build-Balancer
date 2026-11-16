@@ -1,0 +1,29 @@
+[package]
+name = "bb-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "bb-worker"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+base.workspace = true
+crypto.workspace = true
+netio.workspace = true
+agent_core.workspace = true
+bb_core.workspace = true
+bb_sync.workspace = true
+bb_exec.workspace = true
+
+[build-dependencies]
+jflib-build.workspace = true

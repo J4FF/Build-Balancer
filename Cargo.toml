@@ -1,0 +1,60 @@
+# Build Balancer -- spread builds over the machines you own.
+#
+#   crates/bb_core   what every program shares: protocol records, end-to-end encryption,
+#                    pairing, the relay client, sizes and ids
+#   crates/bb_sync   a project folder as a manifest of encrypted blobs: scan, upload, apply
+#   crates/bb_exec   running a job under limits: processes, CPU pinning, memory, system facts
+#   relay            bb-relay: the server in the middle, it only passes sealed data on
+#   worker           bb-worker: runs jobs on a machine that lends its power
+#   cli              bb: the main machine's command line, JSON output and MCP server
+#
+# Built on JFLib (https://jflib.org) and nothing else: the programs are `no_std`, link no C
+# runtime and are one file each.  docs/ARCHITECTURE.md is the plan.
+[workspace]
+resolver = "3"
+members = ["crates/bb_core", "crates/bb_sync", "crates/bb_exec", "relay", "worker", "cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/J4FF/Build-Balancer"
+
+# JFLib's crates below its facade `jflib`, at one exact version (they change together).  The
+# facade would bring the whole GUI stack into the build; these eight are all a headless program
+# needs.  To follow a new JFLib release, change the version in every line.
+[workspace.dependencies]
+rt = { package = "jflib-rt", version = "=0.2.1" }
+plat = { package = "jflib-plat", version = "=0.2.1" }
+base = { package = "jflib-base", version = "=0.2.1" }
+crypto = { package = "jflib-crypto", version = "=0.2.1" }
+compress = { package = "jflib-compress", version = "=0.2.1" }
+netio = { package = "jflib-netio", version = "=0.2.1" }
+agent_core = { package = "jflib-agent-core", version = "=0.2.1" }
+agent_io = { package = "jflib-agent-io", version = "=0.2.1" }
+jflib-build = "=0.2.1"
+bb_core = { path = "crates/bb_core" }
+bb_sync = { path = "crates/bb_sync" }
+bb_exec = { path = "crates/bb_exec" }
+
+# Cargo takes no profile from a dependency.  JFLib's runtime needs panic = "abort".
+[profile.dev]
+panic = "abort"
+opt-level = 1
+debug = 0
+debug-assertions = false
+overflow-checks = false
+strip = "symbols"
+
+# hashing, compression and encryption stay fast in development builds too
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+codegen-units = 1
+lto = "fat"
+debug = 0
+strip = "symbols"
