@@ -42,8 +42,8 @@ what every worker lends and is doing.
 
 Status: version 0.1 -- it works end to end on Windows and Linux, and the CI tests it on
 Windows, Linux and macOS with every change (see [What is tested](#what-is-tested)). It is
-young: the interface may still change, no release has been published yet, and nobody has
-worked with it on a Mac beyond those tests.
+young: the interface may still change, and nobody has worked with it on a Mac beyond those
+tests.
 
 ## Set it up in three steps
 
@@ -63,11 +63,6 @@ and puts them on your PATH.
 The lines for the server and for the other machines below fetch the programs themselves,
 and running a line again updates them. (No release for your system, or you would rather
 build: see [Building](#building).)
-
-> **No release has been published yet.** Until the first one is out, the lines that fetch
-> the programs find nothing: build them ([Building](#building)), copy them to your machines
-> and follow "The whole setup without a window, and without the install script" at the end
-> of this section.
 
 ### 1. The relay: one command on the server
 
@@ -441,8 +436,8 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
 
 **Not tested yet:**
 
-- A real release: the release workflow has not run, and the install lines have only fetched
-  a release packed by the test, not one from GitHub.
+- The install lines against a release on GitHub: the tests let them fetch a release that
+  was packed on the spot.
 - The firewall hints: the code that reads ufw's and firewalld's state has not met a machine
   that runs one of them.
 - The services on Windows and macOS (on Linux the CI installs them).
