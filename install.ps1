@@ -87,7 +87,8 @@ if ($Action -ne 'relay' -and (Test-ServiceRuns 'bb-relay')) {
 if (Test-ServiceRuns 'bb-worker') {
     Write-Host "Note: a worker runs here as a service, with the version from before. In a terminal started with"
     Write-Host "      `"Run as administrator`", this hands it the new program:  bb-worker service install"
-    Write-Host "      (it then starts again by itself as soon as no job runs)"
+    Write-Host "      (it then starts again by itself as soon as no job runs; a worker from before 0.1.2 does not,"
+    Write-Host "      and needs, once -- it ends a job that runs:  bb-worker service stop  and  bb-worker service start)"
 }
 
 switch ($Action) {
