@@ -111,7 +111,10 @@ for p in bb bb-worker bb-relay BuildBalancer; do
     check "$p was replaced by the release's" "new and equal" "$([ "$inst/$p$ext" -nt "$work/before" ] && cmp -s "$inst/$p$ext" "$work/pack/$p$ext" && echo "new and equal")"
 done
 check "the programs still run" 1 "$("$bb" --version 2>/dev/null | grep -c "^bb ")"
-left() { ls -a "$inst" | grep -c '\.old$\|\.new$\|update\.journal$\|update\.probe$'; }
+# (grep -E: in a basic pattern, "this or that" and an end of line before it are not the same
+# on every system -- macOS took the "$" in the middle for a character)
+left() { ls -a "$inst" | grep -cE '\.old$|\.new$|update\.journal$|update\.probe$'; }
+kept() { ls -a "$inst" | grep -cE "^bb-relay$ext\.old\$|update\.journal\$"; }
 check "nothing of the update is left lying around" 0 "$(left)"
 # (the lock's file stays for the next update: a lock is on the file, not on its name)
 check "... but the file its lock is on" 1 "$(ls -a "$inst" | grep -c 'update\.lock$')"
@@ -151,10 +154,10 @@ fi
 note_half_update
 "$bb" --version >"$work/stuck.out" 2>&1
 check "an update that cannot be taken back yet says so" 1 "$(grep -c "is not taken back yet" "$work/stuck.out")"
-check "... and keeps what it kept" 2 "$(ls -a "$inst" | grep -c "^bb-relay$ext\.old\$\|update\.journal\$")"
+check "... and keeps what it kept" 2 "$(kept)"
 "$bb" update >"$work/stuck-update.out" 2>&1
 check "... and no new update is laid on top of it" 1 "$(grep -c "close the Build Balancer programs" "$work/stuck-update.out")"
-check "... which keeps it still" 2 "$(ls -a "$inst" | grep -c "^bb-relay$ext\.old\$\|update\.journal\$")"
+check "... which keeps it still" 2 "$(kept)"
 if [ "$win" = 1 ]; then
     : >"$work/let-go"
     wait "$holder" 2>/dev/null
