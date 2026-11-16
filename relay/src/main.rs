@@ -214,10 +214,17 @@ fn firewall_hint(port: u16) -> Option<String> {
     None
 }
 
-/// what a running relay tells about itself for `status` and `service install`
+/// what a running relay tells about itself for `status` and `service install`: its address,
+/// whether that is more than a guess, and its version
 fn note_address(dir: &str, addr: &str, sure: bool, plain: bool) {
-    let text = format!("{}{}\n{}\n", if plain { "http://" } else { "" }, addr, if sure { "sure" } else { "guessed" });
+    let text = format!("{}{}\n{}\n{}\n", if plain { "http://" } else { "" }, addr, if sure { "sure" } else { "guessed" }, bb_core::VERSION);
     plat::write_file(&plat::fs::join(dir, "address"), text.as_bytes());
+}
+
+/// the version of the relay that wrote the note (None: one from before 0.1.3, which did not say)
+fn noted_version(dir: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(&plat::read_file(&plat::fs::join(dir, "address"))?).into_owned();
+    text.lines().nth(2).map(str::trim).filter(|v| !v.is_empty()).map(String::from)
 }
 
 /// (the address as the other machines take it, whether it is more than this machine's guess)
@@ -324,18 +331,26 @@ fn update_cmd(cli: &Cli) -> i32 {
     }
     out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
     if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
-        // a relay that is not there is worse than an old one: each step that fails is said, and counts
-        if let Err(e) = svc::stop(SERVICE) {
-            return fail(&format!("the service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`", SERVICE, e));
-        }
-        if let Err(e) = svc::start(SERVICE) {
-            return fail(&format!("the service {} was stopped and could NOT be started again ({}): the relay is down until `bb-relay service start` works", SERVICE, e));
+        if let Err(e) = restart_service(&plat::fs::join(&own, &bb_update::file_name("bb-relay"))) {
+            return fail(&e);
         }
         out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
     } else {
         out("A relay that runs in a terminal keeps the old version until it is started again.\n");
     }
     0
+}
+
+/// Have the service run the program `exe` as it is now: stop it if it runs, make the file it
+/// starts that program (Windows, where a service has a copy of its own), start it.  A relay
+/// that is not there is worse than an old one: each step that fails is said, and counts.
+fn restart_service(exe: &str) -> Result<(), String> {
+    if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
+        svc::stop(SERVICE).map_err(|e| format!("the service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`", SERVICE, e))?;
+    }
+    let put = svc::refresh_program(SERVICE, exe);
+    svc::start(SERVICE).map_err(|e| format!("the service {} is stopped and could NOT be started again ({}): the relay is down until `bb-relay service start` works", SERVICE, e))?;
+    put.map_err(|e| format!("the service {} runs again, but with the program from before: {}", SERVICE, e))
 }
 
 /// the service's entry: run_service takes a plain function
@@ -542,20 +557,34 @@ fn service_place(cli: &Cli) -> Result<(String, Option<svc::User>), String> {
 fn install_service(cli: &Cli) -> Result<String, String> {
     let exe = plat::current_exe().ok_or("the program's own path is unknown")?;
     let (dir, user) = service_place(cli)?;
-    let mut args = alloc::vec![String::from("run"), String::from("--service"), String::from("--data"), dir.clone()];
-    for (n, v) in &cli.opts {
-        if n != "--data" {
-            args.push(n.clone());
-            args.push(v.clone());
-        }
-    }
-    if cli.flag("--plain") {
-        args.push(String::from("--plain"));
-    }
     let before = plat::fs::stat(&plat::fs::join(&dir, "address")).map_or(0, |m| m.mtime_ns);
-    let service = svc::Service { name: SERVICE, display: "Build Balancer Relay", description: "Build Balancer: passes sealed build data between the machines that paired through it", exe: &exe, args: &args, user: user.as_ref(), path: None };
-    svc::install(&service).and_then(|_| svc::start(SERVICE))?;
-    let mut m = format!("\nThe relay is installed as the service {} and running{}: it starts with the machine.\n  data folder   {}\n  its log       {}\n\n", SERVICE, user.as_ref().map(|u| format!(" (as {})", u.name)).unwrap_or_default(), dir, plat::fs::join(&plat::fs::join(&dir, "logs"), "relay.log"));
+    // The line that set this server up, run again: nothing is installed twice.  The programs
+    // were replaced a moment ago (that is what the line is run again for), and the relay that
+    // runs is still the one from before -- so it is started again, and says what it is now.
+    let again = svc::installed(SERVICE);
+    let mut m = if again {
+        restart_service(&exe)?;
+        let mut m = format!("\nThe service {} was installed already: it was started again with the program that is there now.\n", SERVICE);
+        if !cli.opts.is_empty() || cli.flag("--plain") {
+            m += "It keeps the settings it was installed with (to change them: `bb-relay service uninstall`, then install again).\n";
+        }
+        m
+    } else {
+        let mut args = alloc::vec![String::from("run"), String::from("--service"), String::from("--data"), dir.clone()];
+        for (n, v) in &cli.opts {
+            if n != "--data" {
+                args.push(n.clone());
+                args.push(v.clone());
+            }
+        }
+        if cli.flag("--plain") {
+            args.push(String::from("--plain"));
+        }
+        let service = svc::Service { name: SERVICE, display: "Build Balancer Relay", description: "Build Balancer: passes sealed build data between the machines that paired through it", exe: &exe, args: &args, user: user.as_ref(), path: None };
+        svc::install(&service).and_then(|_| svc::start(SERVICE))?;
+        format!("\nThe relay is installed as the service {} and running{}: it starts with the machine.\n", SERVICE, user.as_ref().map(|u| format!(" (as {})", u.name)).unwrap_or_default())
+    };
+    m += &format!("  data folder   {}\n  its log       {}\n\n", dir, plat::fs::join(&plat::fs::join(&dir, "logs"), "relay.log"));
     // the service makes or opens the relay; what it notes there says what to do next
     let end = bb_core::util::tick_ms() + 15_000;
     let noted = loop {
@@ -566,7 +595,27 @@ fn install_service(cli: &Cli) -> Result<String, String> {
         }
     };
     match noted {
-        Some((addr, sure)) => m += &next_steps(&dir, &addr, sure),
+        Some((addr, sure)) => {
+            if again {
+                // (the service starts the file it was installed with: that need not be this one)
+                m += &match noted_version(&dir) {
+                    Some(v) if v == bb_core::VERSION => format!("It runs version {} now.\n\n", v),
+                    other => format!(
+                        "It runs {} -- not this program ({}): the service starts another file than {}.\n`bb-relay service uninstall`, then `bb-relay service install` again makes it this one (the relay's data stays).\n\n",
+                        other.map(|v| format!("version {}", v)).unwrap_or_else(|| String::from("an older version")),
+                        bb_core::VERSION,
+                        exe
+                    ),
+                };
+            }
+            m += &next_steps(&dir, &addr, sure);
+        }
+        None if again => {
+            m += &format!(
+                "It has not shown up in that folder within 15 seconds, though.  If the service was installed with\nanother folder (--data), `bb-relay status --data FOLDER` shows it; else its log says why (on Linux\nalso: journalctl -u {} -e).\n",
+                SERVICE
+            )
+        }
         None => m += &format!("It has not come up within 15 seconds, though: its log says why (on Linux also:\njournalctl -u {} -e).  `bb-relay status` shows the setup line once it runs.\n", SERVICE),
     }
     Ok(m)

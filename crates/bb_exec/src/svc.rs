@@ -189,6 +189,39 @@ pub fn installed(name: &str) -> bool {
     plat::service::state(name) != ServiceState::NotInstalled
 }
 
+/// The file a service's manager starts for the program `exe`.  Windows: a copy of its own in
+/// Program Files, when the program lies anywhere else (JFLib makes it at `install`: a program
+/// in a folder of the user's could be replaced by any program of that user, and the service
+/// has the system's rights).  On the other systems it is the program itself.
+pub fn program_file(name: &str, exe: &str) -> Option<String> {
+    plat::service::program_path(&plat::service::ServiceSpec { name, display: "", description: "", exe, args: &[] })
+}
+
+/// After the programs were replaced: make the file the service starts the new program, too.
+/// Only Windows has anything to do here (program_file) -- there an update of the programs
+/// would leave the service with the copy from before.  A copy that is running cannot be
+/// written over, but it can be moved aside: it goes at a later start (it is named as an
+/// update names what it replaced), so this works on a service that runs.
+pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
+    let Some(place) = program_file(name, exe) else { return Ok(()) };
+    if place == exe || plat::file_exists(&place) == 0 {
+        return Ok(());
+    }
+    let new = plat::read_file(exe).ok_or_else(|| format!("{} cannot be read", exe))?;
+    if plat::read_file(&place).is_some_and(|old| old == new) {
+        return Ok(());
+    }
+    need_admin()?;
+    if !plat::write_file(&place, &new) {
+        let aside = format!("{}.old", place);
+        plat::delete(&aside);
+        if !plat::rename(&place, &aside) || !plat::write_file(&place, &new) {
+            return Err(format!("the service's own copy of the program, {}, could not be replaced by the new one", place));
+        }
+    }
+    Ok(())
+}
+
 /// a service's state in words
 pub fn state_text(name: &str) -> &'static str {
     match plat::service::state(name) {

@@ -64,8 +64,9 @@ and puts them on your PATH.
 | Windows (PowerShell) | `irm https://github.com/J4FF/Build-Balancer/releases/latest/download/install.ps1 \| iex` |
 
 The lines for the server and for the other machines below fetch the programs themselves,
-and running a line again updates them. (No release for your system, or you would rather
-build: see [Building](#building).)
+and running a line again updates them: the relay's service is started again with the new
+version, a worker's service takes it by itself as soon as no job runs. (No release for
+your system, or you would rather build: see [Building](#building).)
 
 ### 1. The relay: one command on the server
 
@@ -467,7 +468,11 @@ main machine and worker on the one runner:
 - Linux only, `tools/service-test.sh`, with systemd and root for real: a relay first started
   by hand keeps its data folder and its setup line when it is installed as a service; the
   worker's service runs jobs as the person who installed it, with that person's PATH, in
-  that person's data folder; root has to say whom jobs run as; one command sets a server up.
+  that person's data folder; root has to say whom jobs run as; one command sets a server up
+  -- and the install line run again on that server replaces the programs and starts the
+  relay again with them (`service install` on a service that is there installs nothing
+  twice); the worker's service is left running and starts again by itself when its program
+  is replaced.
 
 **By hand on Windows**, the app against a real relay: pairing through the window, a job on
 the worker inside the app, the project appearing and going with one click. The app updating
@@ -494,7 +499,9 @@ too much is ended on both systems), tasks at once in separate slots, worker choi
   service that starts again after an update: the worker ends with an error once no job runs
   and leaves the starting to the service manager (systemd's `Restart=on-failure`, launchd's
   `KeepAlive`, the restart-on-failure setting of a Windows service). Only systemd has been
-  seen to do it.
+  seen to do it. On Windows a service starts a copy of the program in Program Files;
+  `service install` again and the `update` commands put the new program there, which no
+  test has run.
 - An update from a real release on GitHub: the tests update from a release packed on the
   spot. The first release that can be updated to is the one after 0.1.2.
 - macOS beyond the CI: nobody has looked at the app's window on a Mac, and the memory limit

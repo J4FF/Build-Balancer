@@ -2,7 +2,8 @@
 # The programs as system services on Linux, end to end -- what tools/smoke.sh cannot check,
 # because it needs root: a relay that was first started by hand and then installed as a service
 # keeps its data folder and its setup line, the worker's service runs jobs as the person who
-# installed it (not as root) with that person's PATH, and a server is set up by one command.
+# installed it (not as root) with that person's PATH, a server is set up by one command -- and
+# brought up to date by the same one: the install line run again starts the relay again.
 #
 #   BB_SERVICE_TEST=1 tools/service-test.sh FOLDER_WITH_THE_PROGRAMS
 #
@@ -18,6 +19,7 @@ set -u
     echo "this test is for Linux with systemd"
     exit 2
 }
+root=$(cd "$(dirname "$0")/.." && pwd)
 bin=$(cd "${1:?the folder with the programs}" && pwd)
 me=$(id -un)
 own="$HOME/.local/share/buildbalancer"
@@ -27,6 +29,7 @@ if [ -e "$own" ] || sudo test -e "$system" || [ -e /etc/systemd/system/buildbala
     exit 2
 fi
 port=${BB_SERVICE_PORT:-7792}
+web=${BB_SERVICE_WEB_PORT:-7791}
 work=$(mktemp -d) || exit 1
 [ -n "$work" ] && [ -d "$work" ] || {
     echo "no temporary folder could be made"
@@ -36,9 +39,11 @@ export BB_CONFIG="$work/main"
 bb="$bin/bb"
 fails=0
 relay_pid=""
+web_pid=""
 
 cleanup() {
     [ -n "$relay_pid" ] && kill -9 "$relay_pid" 2>/dev/null
+    [ -n "$web_pid" ] && kill -9 "$web_pid" 2>/dev/null
     sudo "$bin/bb-worker" service uninstall >/dev/null 2>&1
     sudo "$bin/bb-relay" service uninstall >/dev/null 2>&1
     sudo rm -rf "$system"
@@ -98,6 +103,18 @@ check "no second relay was made for root" no "$(sudo test -e "$system/relay" && 
 "$bb" setup "127.0.0.1:$port" "$key" --name service-main >/dev/null
 check "the copied line still sets the main machine up" 0 $?
 
+# --- the same command once more, as the install line gives it when it is run again to update
+# a server: nothing is installed twice, the relay that runs is started again with the program
+# that is there now, and it is still the relay it was
+entered() { systemctl show -p ActiveEnterTimestampMonotonic --value buildbalancer-relay; }
+was=$(entered)
+sudo "$bin/bb-relay" service install --listen "127.0.0.1:$port" >"$work/again.out" 2>&1
+check "bb-relay service install on a relay that has its service" 0 $?
+check "... says that it was there" 1 "$(grep -c "was installed already" "$work/again.out")"
+check "... has started the relay again" yes "$([ "$(entered)" != "$was" ] && echo yes)"
+check "... which says what it runs now" 1 "$(grep -c "^It runs version " "$work/again.out")"
+check "... and is the relay it was: its main machine is still admitted" 1 "$(grep -c "device(s) admitted" "$work/again.out")"
+
 # --- the worker: paired as this user, installed with sudo, runs jobs as this user
 code_in() { grep "bb-worker join" "$work/pair.out" 2>/dev/null | awk '{print $4}'; }
 "$bb" pair >"$work/pair.out" 2>&1 &
@@ -118,6 +135,9 @@ check "jobs run as that user, not as root" "$me" "$(says 'id -un')"
 check "... with that user's own tools on the PATH" 1 "$(says 'echo "$PATH"' | grep -c "$HOME/.cargo/bin")"
 check "... in that user's data folder" 1 "$(ls -d "$own/worker/ws" 2>/dev/null | wc -l | tr -d ' ')"
 cd "$work" || exit 1
+sudo "$bin/bb-worker" service install >"$work/wagain.out" 2>&1
+check "bb-worker service install on a worker that has its service" 0 $?
+check "... stops nothing: a worker comes to new programs by itself" 1 "$(grep -c "is installed already and running" "$work/wagain.out")"
 
 # --- an update never stops the service: the worker sees that another file took its program's
 # place (here a copy of itself), ends with an error once no job runs, and systemd starts it
@@ -139,18 +159,55 @@ sudo "$bin/bb-relay" service uninstall >/dev/null
 check "bb-relay service uninstall" 0 $?
 rm -rf "$own"
 
-# --- a server from nothing: one command installs the relay, starts it and prints the line
-sudo "$bin/bb-relay" service install --listen "127.0.0.1:$port" >"$work/fresh.out" 2>&1
+# --- a server from nothing: one command installs the relay, starts it and prints the line.
+# (From a folder of its own: the install line below replaces the programs in it as root.)
+prog="$work/programs"
+mkdir -p "$prog" "$work/pack" "$work/release"
+for p in bb bb-worker bb-relay BuildBalancer; do
+    cp "$bin/$p" "$prog/"
+    cp "$bin/$p" "$work/pack/"
+done
+sudo "$prog/bb-relay" service install --listen "127.0.0.1:$port" >"$work/fresh.out" 2>&1
 check "one command sets a server up" 0 $?
 key=$(key_in "$work/fresh.out")
 check "... and prints the line for the main machine" 1 "$([ -n "$key" ] && echo 1 || echo 0)"
-check "... which bb-relay status shows again" "$key" "$(sudo "$bin/bb-relay" status | grep "bb setup" | head -1 | awk '{print $4}')"
-check "asked without sudo, the relay is not simply missing" 1 "$("$bin/bb-relay" status 2>&1 | grep -c "$system/relay: run this command with sudo")"
+check "... which bb-relay status shows again" "$key" "$(sudo "$prog/bb-relay" status | grep "bb setup" | head -1 | awk '{print $4}')"
+check "asked without sudo, the relay is not simply missing" 1 "$("$prog/bb-relay" status 2>&1 | grep -c "$system/relay: run this command with sudo")"
+
+# --- the install line run again on that server, to update it: it fetches a release (here one
+# packed from the programs under test), replaces the programs and ends in `bb-relay service
+# install` -- which finds the service there, and must leave the relay running what was fetched
+python3 - "$work" "$(uname -m)" <<'EOF'
+import hashlib, os, shutil, sys
+work, arch = sys.argv[1:3]
+made = shutil.make_archive(os.path.join(work, "release", "buildbalancer-linux-" + arch), "gztar", os.path.join(work, "pack"))
+with open(made, "rb") as f:
+    digest = hashlib.sha256(f.read()).hexdigest()
+with open(os.path.join(work, "release", "SHA256SUMS"), "w", newline="\n") as f:
+    f.write("%s  %s\n" % (digest, os.path.basename(made)))
+EOF
+python3 "$root/tools/serve.py" "$web" "$work/release" >/dev/null 2>&1 &
+web_pid=$!
+served() { python3 -c "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=3).read()" "http://127.0.0.1:$web/SHA256SUMS" >/dev/null 2>&1 && echo yes; }
+wait_for 60 served >/dev/null || die "the test's own web server did not come up" /dev/null
+line() { sudo env BB_RELEASE_URL="http://127.0.0.1:$web" BB_INSTALL_DIR="$prog" sh "$root/install.sh" "$@"; }
+was=$(entered)
+line relay --listen "127.0.0.1:$port" >"$work/line.out" 2>&1
+check "the install line run again on a server ends well" 0 $?
+check "... has replaced the programs" 1 "$(grep -c "^Installed into $prog" "$work/line.out")"
+check "... and started the relay again with them" yes "$([ "$(entered)" != "$was" ] && echo yes)"
+check "... which says what it runs now" 1 "$(grep -c "^It runs version " "$work/line.out")"
+check "... and shows the line for the main machine as before" "$key" "$(key_in "$work/line.out")"
+# the line that only fetches the programs must not leave the old relay running, either
+was=$(entered)
+line >"$work/plain.out" 2>&1
+check "the plain install line ends well on a server" 0 $?
+check "... and starts its relay again, too" yes "$([ "$(entered)" != "$was" ] && echo yes)"
 
 echo
 if [ "$fails" = 0 ]; then echo "all service checks passed"; else
     echo "$fails service check(s) failed"
-    for f in install.out root.out worker.out fresh.out; do
+    for f in install.out again.out root.out worker.out wagain.out fresh.out line.out plain.out; do
         echo "--- $f"
         cat "$work/$f" 2>/dev/null
     done

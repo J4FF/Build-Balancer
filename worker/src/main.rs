@@ -216,6 +216,12 @@ fn update_cmd(cli: &Cli, dir: &str) -> i32 {
             return fail(&e);
         }
         out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
+        // (Windows: a service starts a copy of its own, which is not in that folder)
+        if svc::installed(SERVICE)
+            && let Err(e) = svc::refresh_program(SERVICE, &plat::fs::join(&own, &bb_update::file_name("bb-worker")))
+        {
+            return fail(&e);
+        }
     } else {
         out(&format!("bb-worker {} is the newest version.\n", c.current));
     }
@@ -382,6 +388,9 @@ fn service_place(cli: &Cli, dir: &str) -> Result<(String, Option<svc::User>, Opt
 
 fn install_service(cli: &Cli, dir: &str) -> Result<String, String> {
     let exe = plat::current_exe().ok_or("the program's own path is unknown")?;
+    if svc::installed(SERVICE) {
+        return service_again(&exe);
+    }
     let (dir, user, path) = service_place(cli, dir)?;
     let args = alloc::vec![String::from("run"), String::from("--service"), String::from("--data"), dir.clone()];
     let service = svc::Service {
@@ -407,6 +416,25 @@ fn install_service(cli: &Cli, dir: &str) -> Result<String, String> {
         ),
     };
     Ok(format!("service {} installed and started: this machine lends its power whenever it runs (data: {})\n{}\n`bb workers` on the main machine shows the machine and the tools it found.", SERVICE, dir, who))
+}
+
+/// `service install` where the service is installed already (the line that set the machine up
+/// run again, or the command a second time): nothing is installed twice, and nothing is
+/// stopped -- a job may be running.  The worker that runs sees the new programs by itself and
+/// starts again with them once it has no job; all there is to do is to put the program where
+/// the service starts it from (Windows), and to start a service that does not run.
+fn service_again(exe: &str) -> Result<String, String> {
+    svc::refresh_program(SERVICE, exe)?;
+    // (only one that stands still is started: one on its way up or down is left to get there)
+    let stopped = plat::service::state(SERVICE) == plat::service::ServiceState::Stopped;
+    if stopped {
+        svc::start(SERVICE)?;
+    }
+    Ok(format!(
+        "The service {} is installed already{}.\nA worker that runs sees new programs by itself and starts again with them as soon as no job runs.\n(One from before 0.1.2 does not: `bb-worker service stop`, then `bb-worker service start` -- that ends a job that runs.)\nTo install it anew, with another user or data folder: `bb-worker service uninstall` first.",
+        SERVICE,
+        if stopped { ": it was started" } else { " and running" }
+    ))
 }
 
 fn service_cmd(cli: &Cli, dir: &str) -> i32 {
