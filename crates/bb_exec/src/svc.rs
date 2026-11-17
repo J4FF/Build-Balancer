@@ -197,14 +197,30 @@ pub fn program_file(name: &str, exe: &str) -> Option<String> {
     plat::service::program_path(&plat::service::ServiceSpec { name, display: "", description: "", exe, args: &[] })
 }
 
+/// Whether the file a service starts is a copy of the program (Windows) that is not the
+/// program as it is now: an update replaced the one and not the other.
+pub fn program_stale(name: &str, exe: &str) -> bool {
+    let Some(place) = program_file(name, exe) else { return false };
+    place != exe && plat::file_exists(&place) != 0 && plat::read_file(exe).is_some_and(|new| plat::read_file(&place).is_none_or(|old| old != new))
+}
+
 /// After the programs were replaced: make the file the service starts the new program, too.
 /// Only Windows has anything to do here (program_file) -- there an update of the programs
 /// would leave the service with the copy from before.  A copy that is running cannot be
 /// written over, but it can be moved aside: it goes at a later start (it is named as an
-/// update names what it replaced), so this works on a service that runs.
+/// update names what it replaced), so this works on a service that runs.  A service is
+/// never left without its program: if the new one cannot be put there, the old one is back.
 pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
     let Some(place) = program_file(name, exe) else { return Ok(()) };
-    if place == exe || plat::file_exists(&place) == 0 {
+    if place == exe {
+        return Ok(());
+    }
+    let aside = format!("{}.old", place);
+    // (a replacing that was cut short left the copy under its other name: back with it first)
+    if plat::file_exists(&place) == 0 && plat::file_exists(&aside) != 0 {
+        plat::rename(&aside, &place);
+    }
+    if plat::file_exists(&place) == 0 {
         return Ok(());
     }
     let new = plat::read_file(exe).ok_or_else(|| format!("{} cannot be read", exe))?;
@@ -212,11 +228,16 @@ pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
         return Ok(());
     }
     need_admin()?;
+    let failed = || format!("the service's own copy of the program, {}, could not be replaced by the new one", place);
     if !plat::write_file(&place, &new) {
-        let aside = format!("{}.old", place);
         plat::delete(&aside);
-        if !plat::rename(&place, &aside) || !plat::write_file(&place, &new) {
-            return Err(format!("the service's own copy of the program, {}, could not be replaced by the new one", place));
+        if !plat::rename(&place, &aside) {
+            return Err(failed());
+        }
+        if !plat::write_file(&place, &new) {
+            plat::delete(&place);
+            plat::rename(&aside, &place);
+            return Err(failed());
         }
     }
     Ok(())

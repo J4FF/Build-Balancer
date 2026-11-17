@@ -210,20 +210,25 @@ fn update_cmd(cli: &Cli, dir: &str) -> i32 {
         out(&if c.newer { format!("Version {} is available (this is {}): bb-worker update\n", c.latest, c.current) } else { format!("bb-worker {} is the newest version.\n", c.current) });
         return 0;
     }
+    let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
     if c.newer {
-        let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
         if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
             return fail(&e);
         }
         out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
-        // (Windows: a service starts a copy of its own, which is not in that folder)
-        if svc::installed(SERVICE)
-            && let Err(e) = svc::refresh_program(SERVICE, &plat::fs::join(&own, &bb_update::file_name("bb-worker")))
-        {
-            return fail(&e);
-        }
     } else {
         out(&format!("bb-worker {} is the newest version.\n", c.current));
+    }
+    // Windows: a service starts a copy of its own of the program, which is not in that folder.
+    // It gets the new program, too -- also the one of an update before this call, which could
+    // not put it there.  (That is an error only when this call installed something.)
+    if svc::installed(SERVICE)
+        && let Err(e) = svc::refresh_program(SERVICE, &plat::fs::join(&own, &bb_update::file_name("bb-worker")))
+    {
+        if c.newer {
+            return fail(&e);
+        }
+        bb_core::util::err(&format!("bb-worker: note: the service still starts the program from before: {}\n", e));
     }
     // Whoever lends on this data folder right now -- `bb-worker run`, the service, the app --
     // holds its lock and may still run an older program: the files could have been replaced

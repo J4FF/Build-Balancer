@@ -317,23 +317,35 @@ fn update_cmd(cli: &Cli) -> i32 {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
-    if !c.newer {
-        out(&format!("bb-relay {} is the newest version.\n", c.current));
-        return 0;
-    }
     if cli.flag("--check") {
-        out(&format!("Version {} is available (this is {}): bb-relay update\n", c.latest, c.current));
+        out(&if c.newer { format!("Version {} is available (this is {}): bb-relay update\n", c.latest, c.current) } else { format!("bb-relay {} is the newest version.\n", c.current) });
         return 0;
     }
     let Some(own) = bb_update::own_dir() else { return fail("the program's own folder is unknown") };
+    let exe = plat::fs::join(&own, &bb_update::file_name("bb-relay"));
+    let ran = plat::service::state(SERVICE) == plat::service::ServiceState::Running;
+    if !c.newer {
+        out(&format!("bb-relay {} is the newest version.\n", c.current));
+        // The service may still start a copy of the program from before (Windows), which an
+        // update before this one could not replace: that is made up for.  (Said, and no
+        // error: this call had nothing to install.)
+        if svc::installed(SERVICE) && svc::program_stale(SERVICE, &exe) {
+            match restart_service(&exe, false) {
+                Ok(()) => out(&format!("The service {} still started the program from before: it has this one now{}.\n", SERVICE, if ran { " and was started again" } else { "" })),
+                Err(e) => bb_core::util::err(&format!("bb-relay: note: {}\n", e)),
+            }
+        }
+        return 0;
+    }
     if let Err(e) = bb_update::install(&c.latest, &own, &mut |m| out(&format!("{} ...\n", m))) {
         return fail(&e);
     }
     out(&format!("Version {} is installed in {} (bb, bb-worker, bb-relay, BuildBalancer).\n", c.latest, own));
-    if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
-        if let Err(e) = restart_service(&plat::fs::join(&own, &bb_update::file_name("bb-relay"))) {
-            return fail(&e);
-        }
+    // (a service that stands still gets the new program as well, and is left standing)
+    if let Err(e) = restart_service(&exe, false) {
+        return fail(&e);
+    }
+    if ran {
         out(&format!("The service {} was started again and runs the new version.\n", SERVICE));
     } else {
         out("A relay that runs in a terminal keeps the old version until it is started again.\n");
@@ -342,13 +354,19 @@ fn update_cmd(cli: &Cli) -> i32 {
 }
 
 /// Have the service run the program `exe` as it is now: stop it if it runs, make the file it
-/// starts that program (Windows, where a service has a copy of its own), start it.  A relay
-/// that is not there is worse than an old one: each step that fails is said, and counts.
-fn restart_service(exe: &str) -> Result<(), String> {
-    if plat::service::state(SERVICE) == plat::service::ServiceState::Running {
+/// starts that program (Windows, where a service has a copy of its own), start it again.  A
+/// service that did not run is started only when `start` says so (`service install`): an
+/// update leaves standing what stood.  A relay that is not there is worse than an old one:
+/// each step that fails is said, and counts.
+fn restart_service(exe: &str, start: bool) -> Result<(), String> {
+    let ran = plat::service::state(SERVICE) == plat::service::ServiceState::Running;
+    if ran {
         svc::stop(SERVICE).map_err(|e| format!("the service {} still runs the old version ({}): `bb-relay service stop`, then `bb-relay service start`", SERVICE, e))?;
     }
     let put = svc::refresh_program(SERVICE, exe);
+    if !ran && !start {
+        return put;
+    }
     svc::start(SERVICE).map_err(|e| format!("the service {} is stopped and could NOT be started again ({}): the relay is down until `bb-relay service start` works", SERVICE, e))?;
     put.map_err(|e| format!("the service {} runs again, but with the program from before: {}", SERVICE, e))
 }
@@ -563,7 +581,7 @@ fn install_service(cli: &Cli) -> Result<String, String> {
     // runs is still the one from before -- so it is started again, and says what it is now.
     let again = svc::installed(SERVICE);
     let mut m = if again {
-        restart_service(&exe)?;
+        restart_service(&exe, true)?;
         let mut m = format!("\nThe service {} was installed already: it was started again with the program that is there now.\n", SERVICE);
         if !cli.opts.is_empty() || cli.flag("--plain") {
             m += "It keeps the settings it was installed with (to change them: `bb-relay service uninstall`, then install again).\n";

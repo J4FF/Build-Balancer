@@ -108,9 +108,12 @@ if [ "$action" != relay ] && service_runs bb-relay; then
     fi
 fi
 if service_runs bb-worker; then
-    say "Note: a worker runs here as a service.  It sees the new programs by itself and starts again with them"
-    say "      as soon as no job runs.  (One from before 0.1.2 does not; that one needs, once -- it ends a job"
-    say "      that runs:  sudo $dir/bb-worker service stop && sudo $dir/bb-worker service start)"
+    say "Note: a worker runs here as a service.  If its program is the one in $dir, it sees the new one by"
+    say "      itself and starts again with it as soon as no job runs.  A service that was installed from"
+    say "      another folder still has the program there: run this line the way it was run then (with sudo"
+    say "      for /usr/local/bin).  And a worker from before 0.1.2 does not start again by itself; that one"
+    say "      needs, once -- it ends a job that runs:"
+    say "      sudo $dir/bb-worker service stop && sudo $dir/bb-worker service start"
 fi
 
 case "$action" in
