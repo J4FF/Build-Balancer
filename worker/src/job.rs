@@ -24,7 +24,7 @@ use bb_core::proto::{self, Done, Event, JobSpec, TreeRef, Workspace};
 use bb_core::util::{below, now, size_text, tick_ms};
 use bb_sync::{Apply, Known};
 
-use crate::config;
+use crate::config::{self, Place};
 use crate::engine::{Running, Worker};
 
 /// output relayed per job; beyond it only the file on the worker grows
@@ -260,7 +260,8 @@ pub fn run(w: Arc<Worker>, r: Arc<Running>) {
     plat::log_info("job", &format!("{} starts: {} ({} processors)", spec.id, spec.command_text(), r.cpu));
     let t0 = tick_ms();
     let mut done = Done { state: String::from(proto::ST_ERROR), exit: -1, ..Done::default() };
-    if let Err(e) = execute(&w, &r, &em, &jd, &mut done) {
+    let place = place_of(&w, spec);
+    if let Err(e) = execute(&w, &r, &em, &jd, &place, &mut done) {
         done.state = String::from(proto::ST_ERROR);
         done.error = e;
     }
@@ -272,34 +273,72 @@ pub fn run(w: Arc<Worker>, r: Arc<Running>) {
         bb_core::util::put_file(&plat::fs::join(&jd, "sent"), b"1");
     }
     // the workspace's size, for the quota and the status (the workspace stays held meanwhile)
-    let wsd = config::ws_dir(&w.dir, &spec.project_id, &spec.slot);
+    let wsd = config::ws_dir(&place.root, &spec.project_id, &spec.slot);
     if plat::file_exists(&wsd) == 2 {
-        config::save_workspace(&w.dir, &Workspace { project_id: spec.project_id.clone(), project: spec.project.clone(), slot: spec.slot.clone(), bytes: bb_core::util::tree_size(&wsd, u64::MAX), used: now() });
+        config::save_workspace(&place.root, &Workspace { project_id: spec.project_id.clone(), project: spec.project.clone(), slot: spec.slot.clone(), bytes: bb_core::util::tree_size(&wsd, u64::MAX), used: now() });
     }
     {
         let mut s = w.sched.lock();
         s.running.retain(|x| x.spec.id != spec.id);
-        s.cores.give_back(r.mask);
+        // (a light job held none: its mask is all of them)
+        if !spec.light {
+            s.cores.give_back(r.mask);
+        }
         s.dirty = true;
     }
     w.wake.notify_all();
 }
 
-/// what the workspaces hold together, and the one of this job alone
-fn disk_used(w: &Worker, spec: &JobSpec) -> (u64, u64) {
-    let all = config::workspaces(&w.dir);
+/// free bytes of the volume a folder lies on -- or will lie on: asked at the nearest folder
+/// above it that is there
+fn volume_free(path: &str) -> u64 {
+    let mut p = path;
+    loop {
+        if let Some(f) = plat::fs::free_space(p) {
+            return f.0;
+        }
+        let up = plat::fs::parent(p);
+        if up.is_empty() || up == p {
+            return 0;
+        }
+        p = up;
+    }
+}
+
+/// what may still be written in a place: what is left of its limit, and never its volume to the brim
+fn room(place: &Place) -> u64 {
+    let used: u64 = config::workspaces_in(&place.root).iter().map(|x| x.bytes).sum();
+    place.limit.saturating_sub(used).min(volume_free(&place.root).saturating_sub(256 << 20))
+}
+
+/// The place a job's project is kept in: the one that holds its copy -- unless that one was
+/// given up --, else the one with the most room.  A copy on a drive that is not there right
+/// now is not waited for: the project is fetched again, to a place that is.
+fn place_of(w: &Worker, spec: &JobSpec) -> Place {
+    let c = w.cfg.lock().clone();
+    let mut places = config::places(&w.dir, &c);
+    let lent: Vec<Place> = places.iter().filter(|p| p.limit > 0).cloned().collect();
+    if let Some(p) = lent.iter().find(|p| plat::file_exists(&config::ws_dir(&p.root, &spec.project_id, &spec.slot)) == 2) {
+        return p.clone();
+    }
+    // (nothing lent that is there: the data folder, whose limit then says why nothing fits)
+    lent.into_iter().max_by_key(room).unwrap_or_else(|| places.swap_remove(0))
+}
+
+/// what the workspaces of a place hold together, and the one of this job alone
+fn disk_used(place: &Place, spec: &JobSpec) -> (u64, u64) {
+    let all = config::workspaces_in(&place.root);
     let own = all.iter().find(|x| x.project_id == spec.project_id && x.slot == spec.slot).map_or(0, |x| x.bytes);
     (all.iter().map(|x| x.bytes).sum(), own)
 }
 
-/// Make room for `need` more bytes inside the lent disk space: workspaces nobody uses right
+/// Make room for `need` more bytes inside what a place lends: workspaces nobody uses right
 /// now go, the one unused the longest first -> the bytes that may be written.
-fn make_room(w: &Worker, spec: &JobSpec, need: u64) -> u64 {
-    let lent = w.cfg.lock().disk;
+fn make_room(w: &Worker, spec: &JobSpec, place: &Place, need: u64) -> u64 {
     loop {
-        let all = config::workspaces(&w.dir);
+        let all = config::workspaces_in(&place.root);
         let used: u64 = all.iter().map(|x| x.bytes).sum();
-        let left = lent.saturating_sub(used);
+        let left = place.limit.saturating_sub(used);
         if need <= left {
             return left;
         }
@@ -308,7 +347,7 @@ fn make_room(w: &Worker, spec: &JobSpec, need: u64) -> u64 {
         rest.sort_by_key(|x| x.used);
         let Some(v) = rest.into_iter().find(|x| w.reserve_removal(&x.project_id, &x.slot)) else { return left };
         plat::log_info("disk", &format!("workspace {} / {} ({}) removed to make room", v.project, v.slot, size_text(v.bytes)));
-        let gone = bb_core::util::remove_tree(&config::ws_dir(&w.dir, &v.project_id, &v.slot));
+        let gone = bb_core::util::remove_tree(&config::ws_dir(&place.root, &v.project_id, &v.slot));
         w.release_removal(&v.project_id, &v.slot);
         if !gone {
             return left;
@@ -316,9 +355,14 @@ fn make_room(w: &Worker, spec: &JobSpec, need: u64) -> u64 {
     }
 }
 
-fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> Result<(), String> {
+/// a place in words, for a message: "this worker's disk", or the drive
+fn place_name(place: &Place) -> String {
+    if place.path.is_empty() { String::from("this worker's disk") } else { format!("this worker's drive {}", place.path) }
+}
+
+fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, place: &Place, done: &mut Done) -> Result<(), String> {
     let spec = &r.spec;
-    let wsd = config::ws_dir(&w.dir, &spec.project_id, &spec.slot);
+    let wsd = config::ws_dir(&place.root, &spec.project_id, &spec.slot);
     let tree_dir = plat::fs::join(&wsd, "tree");
     let known_path = plat::fs::join(&wsd, "known");
     let relay = w.relay.fork();
@@ -329,12 +373,18 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
         let tree = bb_sync::fetch_tree(&relay, &w.data, &spec.tree)?;
         let mut known = Known::load(&known_path);
         let need = bb_sync::need_bytes(&tree_dir, &tree, &known);
-        let mut budget = make_room(w, spec, need);
+        let mut budget = make_room(w, spec, place, need);
         // never fill the volume to the brim, whatever is lent
-        let free = plat::fs::free_space(&w.dir).map_or(u64::MAX, |f| f.0);
-        budget = budget.min(free.saturating_sub(256 << 20));
+        budget = budget.min(volume_free(&place.root).saturating_sub(256 << 20));
         if need > budget {
-            return Err(format!("the project needs {} more on this worker's disk, but only {} are free of the {} it lends (bb-worker config --disk)", size_text(need), size_text(budget), size_text(w.cfg.lock().disk)));
+            return Err(format!(
+                "the project needs {} more on {}, but only {} are free of the {} it lends there (bb-worker config {})",
+                size_text(need),
+                place_name(place),
+                size_text(budget),
+                size_text(place.limit),
+                if place.path.is_empty() { "--disk" } else { "--store" }
+            ));
         }
         let st = bb_sync::apply(&relay, &w.data, &tree_dir, &tree, &mut known, &Apply { delete: true, compare: false, budget }, &mut |_, _| {});
         // also after a failure: what arrived is not fetched again
@@ -342,7 +392,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
         let st = st?;
         done.sync_files = st.written;
         done.sync_bytes = st.bytes;
-        config::save_workspace(&w.dir, &Workspace { project_id: spec.project_id.clone(), project: spec.project.clone(), slot: spec.slot.clone(), bytes: disk_used(w, spec).1.max(tree.bytes()), used: now() });
+        config::save_workspace(&place.root, &Workspace { project_id: spec.project_id.clone(), project: spec.project.clone(), slot: spec.slot.clone(), bytes: disk_used(place, spec).1.max(tree.bytes()), used: now() });
     } else if !plat::mkdir(&tree_dir) {
         return Err(format!("{} cannot be created", tree_dir));
     }
@@ -371,10 +421,13 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
                 plat::fs::set_mode(&program, 0o755);
             }
     }
-    let (worker_name, lent_disk, low_priority) = {
+    let (worker_name, low_priority, may_leave) = {
         let c = w.cfg.lock();
-        (c.name.clone(), c.disk, c.priority != "normal")
+        // (a light job is a guest beside the others: always below them)
+        (c.name.clone(), c.priority != "normal" || spec.light, c.leave_running)
     };
+    // (the limit of the place as it was when the job started)
+    let lent_disk = place.limit;
     let mut env: Vec<(String, Option<String>)> = Vec::new();
     let cpus = format!("{}", r.cpu);
     for (k, v) in [
@@ -401,11 +454,16 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
         env.push((e.name.clone(), Some(e.value.clone())));
     }
     set_state(w, r, em, proto::ST_RUNNING, spec.command_text());
+    if spec.leave_running {
+        return leave_running(w, spec, jd, may_leave, &worker_name, &program, &args, &cwd, &env, done);
+    }
     let mut p = bb_exec::spawn(&bb_exec::Spec { program, args, cwd, env, affinity: r.mask, low_priority })?;
 
     let mut log = LogBuf::new(jd, Emitter::new(w, &spec.main, &spec.id));
-    let deadline = (spec.timeout > 0).then(|| tick_ms() + spec.timeout * 1000);
-    let (used0, own0) = disk_used(w, spec);
+    // a light job runs LIGHT_SECS at most, whatever it asked for
+    let limit = if spec.light { if spec.timeout == 0 { proto::LIGHT_SECS } else { spec.timeout.min(proto::LIGHT_SECS) } } else { spec.timeout };
+    let deadline = (limit > 0).then(|| tick_ms() + limit * 1000);
+    let (used0, own0) = disk_used(place, spec);
     let free0 = plat::fs::free_space(&wsd).map_or(0, |f| f.0);
     let (mut next_mem, mut next_disk, mut next_exact) = (tick_ms() + 500, tick_ms() + 10_000, 0u64);
     let mut peak = 0u64;
@@ -423,7 +481,11 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
             } else if let Some(why) = r.kill.lock().take() {
                 stop = Some((proto::ST_KILLED, why));
             } else if deadline.is_some_and(|d| t > d) {
-                stop = Some((proto::ST_KILLED, format!("time limit of {} reached", bb_core::util::dur_text(spec.timeout * 1000))));
+                stop = Some((proto::ST_KILLED, if spec.light && limit != spec.timeout {
+                    format!("a light job runs {} at most (bb run --light): this one needs a job of its own", bb_core::util::dur_text(limit * 1000))
+                } else {
+                    format!("time limit of {} reached", bb_core::util::dur_text(limit * 1000))
+                }));
             } else if w.stopping() {
                 stop = Some((proto::ST_CANCELLED, String::from("the worker was stopped")));
             } else if t >= next_disk {
@@ -437,7 +499,7 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
                     let others = used0 - own0;
                     let own = bb_core::util::tree_size(&wsd, lent_disk.saturating_sub(others));
                     if others + own > lent_disk {
-                        stop = Some((proto::ST_KILLED, format!("disk limit: the workspaces grew beyond the {} this worker lends (bb-worker config --disk)", size_text(lent_disk))));
+                        stop = Some((proto::ST_KILLED, format!("disk limit: the workspaces grew beyond the {} lent on {} (bb-worker config {})", size_text(lent_disk), place_name(place), if place.path.is_empty() { "--disk" } else { "--store" })));
                     }
                 }
             }
@@ -487,6 +549,51 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, done: &mut Done) -> 
             }
         }
     }
+    Ok(())
+}
+
+/// what a worker says to a job that is to leave a program running where its owner does not allow it
+pub const LEAVE_REFUSED: &str = "this worker lets no program outlive its job: on it, `bb-worker config --leave-running yes` (or the switch in the app) allows that";
+
+/// `bb run --leave-running`: start the program on its own -- outside the worker's process
+/// tree, so the end of the job is not its end -- and end the job.  Its output goes to a file
+/// in the job's folder; on Linux and macOS its process id is told.
+#[allow(clippy::too_many_arguments)]
+fn leave_running(w: &Worker, spec: &JobSpec, jd: &str, allowed: bool, worker: &str, program: &str, args: &[String], cwd: &str, env: &[(String, Option<String>)], done: &mut Done) -> Result<(), String> {
+    if !allowed {
+        return Err(String::from(LEAVE_REFUSED));
+    }
+    let (log_path, pid_path) = (plat::fs::join(jd, "left-running.log"), plat::fs::join(jd, "left-running.pid"));
+    let (shell, mut shell_args, text, ext) = bb_exec::launcher(program, args, cwd, env, &log_path, &pid_path)?;
+    let script = plat::fs::join(jd, &format!("left-running.{}", ext));
+    if !plat::write_file(&script, text.as_bytes()) {
+        return Err(format!("{} cannot be written", script));
+    }
+    shell_args.push(script);
+    let refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+    plat::process::launch(&shell, &refs).map_err(|code| format!("{}: could not be started (system error {})", program, code))?;
+    // its process id, as the script notes it before it becomes the program
+    let mut pid = String::new();
+    if !cfg!(windows) {
+        let end = tick_ms() + 3000;
+        while pid.is_empty() && tick_ms() < end {
+            plat::sleep_ms(50);
+            pid = plat::read_file(&pid_path).map(|b| String::from(String::from_utf8_lossy(&b).trim())).unwrap_or_default();
+        }
+    }
+    let mut log = LogBuf::new(jd, Emitter::new(w, &spec.main, &spec.id));
+    let line = format!(
+        "started and left running on {}{}: {}\nits output goes to {} there; the worker does not hold, watch or end it\n",
+        worker,
+        if pid.is_empty() { String::new() } else { format!(" (process {})", pid) },
+        spec.command_text(),
+        log_path
+    );
+    log.push(false, line.as_bytes());
+    log.finish();
+    plat::log_info("job", &format!("{} left running{}: {}", spec.id, if pid.is_empty() { String::new() } else { format!(" (process {})", pid) }, spec.command_text()));
+    done.exit = 0;
+    done.state = String::from(proto::ST_DONE);
     Ok(())
 }
 

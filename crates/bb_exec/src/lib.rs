@@ -19,6 +19,10 @@ pub mod tools;
 
 pub use run::{resolve, script, spawn, Proc, Spec};
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// The processors a worker lends, and who holds them.  Jobs get distinct processors, so two
 /// jobs with four each really run on eight.
 pub struct Cores {
@@ -82,6 +86,54 @@ impl Cores {
     pub fn give_back(&mut self, mask: u64) {
         self.free |= mask & self.lent;
     }
+
+    /// every lent processor (0: not pinning): where a light job runs, beside the others
+    pub fn lent_mask(&self) -> u64 {
+        self.lent
+    }
+}
+
+/// A script that starts a program on its own, in `cwd`, with `env` (the worker's environment
+/// plus these), its output appended to `log`; on Linux and macOS it notes its process id in
+/// `pid` first.  -> (the interpreter, its arguments before the script, the script, the
+/// script's extension).  For plat::process::launch, which starts a program outside the
+/// worker's process tree but has no folder, environment or output of its own.
+pub fn launcher(program: &str, args: &[String], cwd: &str, env: &[(String, Option<String>)], log: &str, pid: &str) -> Result<(String, Vec<String>, String, &'static str), String> {
+    let set: Vec<(&str, &str)> = env.iter().filter_map(|(k, v)| v.as_deref().map(|v| (k.as_str(), v))).collect();
+    if cfg!(windows) {
+        // cmd: in quotes everything is taken as it is, but a quote or a line break; a percent
+        // sign is doubled in a batch file
+        let bad = |t: &str| t.contains(['"', '\r', '\n', '\0']);
+        if bad(program) || args.iter().any(|a| bad(a)) || bad(cwd) || set.iter().any(|(k, v)| bad(k) || bad(v)) {
+            return Err(String::from("a quote or a line break cannot be handed to a program that is left running on Windows: put the command into a script (--sh)"));
+        }
+        let q = |t: &str| format!("\"{}\"", t.replace('%', "%%"));
+        let mut text = format!("@echo off\r\ncd /d {} || exit /b 1\r\n", q(cwd));
+        for (k, v) in &set {
+            text += &format!("set {}\r\n", q(&format!("{}={}", k, v)));
+        }
+        text += &q(program);
+        for a in args {
+            text.push(' ');
+            text += &q(a);
+        }
+        text += &format!(" >> {} 2>&1\r\n", q(log));
+        return Ok((String::from("cmd.exe"), alloc::vec![String::from("/d"), String::from("/c")], text, "cmd"));
+    }
+    let q = |t: &str| format!("'{}'", t.replace('\'', "'\\''"));
+    let mut text = format!("#!/bin/sh\necho $$ > {}\ncd {} || exit 1\nexec env", q(pid), q(cwd));
+    for (k, v) in &set {
+        text.push(' ');
+        text += &q(&format!("{}={}", k, v));
+    }
+    text.push(' ');
+    text += &q(program);
+    for a in args {
+        text.push(' ');
+        text += &q(a);
+    }
+    text += &format!(" >> {} 2>&1 < /dev/null\n", q(log));
+    Ok((String::from("/bin/sh"), Vec::new(), text, "sh"))
 }
 
 /// how busy all processors of the machine were since the last call, in percent

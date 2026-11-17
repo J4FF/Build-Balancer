@@ -43,6 +43,10 @@ pub struct Request {
     pub label: String,
     /// send the project's files first (false: run in the workspace as the worker has it)
     pub sync: bool,
+    /// a light job: no processors held, it starts at once beside the others (JobSpec::light)
+    pub light: bool,
+    /// start the program and leave it running on the worker (JobSpec::leave_running)
+    pub leave_running: bool,
 }
 
 /// the id of the workspace for commands outside a project
@@ -59,8 +63,23 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
     if slot.is_empty() {
         return Err(String::from("the slot's name needs letters or digits"));
     }
+    let light = req.light || req.leave_running;
     let (worker, key) = {
         let v = fleet::pick(views, &req.worker, &needs, req.cpu, req.ram)?;
+        // what the worker said of itself last: a program is left running only where its owner
+        // allows it, and only a worker from 0.1.4 on knows either kind of job
+        if let Some(s) = &v.status {
+            let old = bb_update::newer("0.1.4", &s.version);
+            if req.leave_running && old {
+                return Err(format!("{} runs version {}, which cannot leave a program running: bring it up to date first (bb update -w {})", v.paired.name, s.version, v.paired.name));
+            }
+            if req.leave_running && !s.leave_running {
+                return Err(format!("{} lets no program outlive its job: on that machine, `bb-worker config --leave-running yes` (or the switch in the app) allows it", v.paired.name));
+            }
+            if light && old {
+                say(&format!("note: {} runs version {}: it runs this light job as an ordinary one of one processor", v.paired.name, s.version));
+            }
+        }
         (v.paired.clone(), ctx.pair_key(&v.paired).ok_or("the worker's key is damaged; pair it again")?)
     };
 
@@ -102,9 +121,12 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
         script: req.script.clone(),
         cwd: req.cwd.replace('\\', "/"),
         env: req.env.clone(),
-        cpu: req.cpu,
+        // (a light job holds none; a worker before 0.1.4 runs it as a job of one processor)
+        cpu: if light && req.cpu == 0 { 1 } else { req.cpu },
         ram: req.ram,
         timeout: req.timeout,
+        light,
+        leave_running: req.leave_running,
         outputs: req.outputs.clone(),
         created: now(),
         label: req.label.clone(),

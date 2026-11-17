@@ -198,16 +198,16 @@ pub fn program_file(name: &str, exe: &str) -> Option<String> {
 }
 
 /// Whether the file a service starts is a copy of the program (Windows) that is not the
-/// program as it is now: an update replaced the one and not the other -- or the copy is gone
-/// and the one from before still lies beside it, which a replacing that was cut short leaves.
-/// refresh_program sets both right.
+/// program as it is now: an update replaced the one and not the other -- or the copy is gone,
+/// with the one from before still beside it (what a replacing leaves that was cut short), or
+/// gone altogether though the service is installed.  refresh_program sets all of it right.
 pub fn program_stale(name: &str, exe: &str) -> bool {
     let Some(place) = program_file(name, exe) else { return false };
     if place == exe {
         return false;
     }
     if plat::file_exists(&place) == 0 {
-        return plat::file_exists(&format!("{}.old", place)) != 0;
+        return plat::file_exists(&format!("{}.old", place)) != 0 || installed(name);
     }
     plat::read_file(exe).is_some_and(|new| plat::read_file(&place).is_none_or(|old| old != new))
 }
@@ -225,16 +225,19 @@ pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
     }
     let aside = format!("{}.old", place);
     if plat::file_exists(&place) == 0 {
-        // no copy there and none kept: this service has no file of its own
-        if plat::file_exists(&aside) == 0 {
+        if plat::file_exists(&aside) != 0 {
+            // A replacing that was cut short left the copy under its other name: back with it
+            // first.  A service without its program does not start, so this may not fail unsaid.
+            need_admin()?;
+            if !plat::rename(&aside, &place) {
+                return Err(format!("the service's program, {}, is missing, and the copy kept beside it ({}) could not be put back", place, aside));
+            }
+        } else if !installed(name) {
+            // no copy there, none kept, and no service: there is nothing here to keep up
+            // (a relay in a terminal, a program that lies in Program Files itself)
             return Ok(());
         }
-        // A replacing that was cut short left the copy under its other name: back with it
-        // first.  A service without its program does not start, so this may not fail unsaid.
-        need_admin()?;
-        if !plat::rename(&aside, &place) {
-            return Err(format!("the service's program, {}, is missing, and the copy kept beside it ({}) could not be put back", place, aside));
-        }
+        // (a service that is installed and has lost its file altogether gets it anew below)
     }
     let new = plat::read_file(exe).ok_or_else(|| format!("{} cannot be read", exe))?;
     if plat::read_file(&place).is_some_and(|old| old == new) {
@@ -244,7 +247,8 @@ pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
     let failed = || format!("the service's own copy of the program, {}, could not be replaced by the new one", place);
     if !plat::write_file(&place, &new) {
         plat::delete(&aside);
-        if !plat::rename(&place, &aside) {
+        // (nothing there to move aside: the file could simply not be written)
+        if plat::file_exists(&place) == 0 || !plat::rename(&place, &aside) {
             return Err(failed());
         }
         if !plat::write_file(&place, &new) {

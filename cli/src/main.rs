@@ -76,6 +76,11 @@ fn usage() -> String {
          \x20   --sh \"SCRIPT\"        a shell script instead of COMMAND (--shell sh|bash|cmd|powershell)\n\
          \x20   -d, --detach         do not wait: prints the job's id\n\
          \x20   --no-sync            do not send the project's files first\n\
+         \x20   --light              holds no processors: starts at once beside the other jobs\n\
+         \x20                        (a screenshot, a look at a log; 10 minutes at most)\n\
+         \x20   --leave-running      start the program and leave it running (an app, a server):\n\
+         \x20                        where the worker's owner allows it; otherwise everything a\n\
+         \x20                        job starts -- also with nohup or & -- ends with the job\n\
          \x20   --no-fetch           leave the outputs at the relay (bb fetch JOB)   --to DIR\n\
          bb task NAME.. | --all [-w NAME] [-d] run tasks of buildbalancer.ini (several: at once)\n\
          bb tasks                              list them\n\

@@ -229,6 +229,25 @@ file lets several `bb` processes follow one job without reading events twice.
 
 A worker need not be online when a job is sent: the order waits in its inbox.
 
+A light job (`JobSpec::light`, `bb run --light`) holds no processors and is not one of the
+jobs at once: it starts as soon as it arrives, on all the lent processors at low priority,
+`LIGHT_AT_ONCE` (2) at a time and `LIGHT_SECS` (10 minutes) at most. One that brings files
+waits for its workspace like any job; one that does not shares it with the job that runs
+there. The main machine sends a light job with `cpu` 1, so a worker before 0.1.4, which does
+not know the field, runs it as a job of one processor.
+
+What a job starts ends with it: its process runs in a process group of its own (Linux, macOS)
+or job object (Windows), which the worker ends with the job. `JobSpec::leave_running` (`bb
+run --leave-running`, always light) is the one way past that: the worker writes a small
+script into the job's folder that goes to the job's folder in the workspace, sets the job's
+environment and starts the program with its output appended to `left-running.log`, and
+hands that script to `plat::process::launch`, which starts it outside the worker's process
+tree (Linux: adopted by init in a session of its own; Windows: outside the worker's job).
+The job ends at once; on Linux and macOS the script notes its process id first, and the job
+says it. The worker only does this when its owner allows it (`Config::leave_running`, told
+to the main machine in `WorkerStatus::leave_running`), and the main machine refuses to send
+such a job to a worker that does not allow it or is older than 0.1.4.
+
 ### What survives a restart
 
 A job's folder on the worker (`<worker data>/jobs/<job id>/`) says where the job stands:
@@ -333,6 +352,19 @@ dropped fails with a message that says so, and sending the project again repairs
 - **Disk.** Workspace sizes are recorded after every job. A sync first makes room by removing
   workspaces unused the longest; while a job runs, the volume's free space is watched and the
   workspace measured when it shrank enough to matter.
+- **Drives.** Besides the data folder (`Config::disk`) a worker can keep projects on other
+  drives (`Config::stores`: a drive or folder and what is lent there), each in a folder of
+  its own, `DRIVE/BuildBalancer/<worker id>/ws/`, and each with its own limit -- the limits
+  above hold per place. A job's project stays in the place that holds its copy; a new one
+  goes to the place with the most room. A drive that is not there is no place for the time
+  being, and nothing waits for it: the project is a copy, and the next job sends it to a
+  place that is there. A drive given up (`--store DRIVE=off`, the switch in the app) gets
+  nothing new, and the running worker removes its copies one by one, each when no job runs
+  in it (`cleanup::give_up`), then its folder on the drive; the entry goes from the settings
+  once the drive holds nothing. The drives the app offers come from `bb_exec::sys::volumes`:
+  the drive letters with a medium on Windows, what is mounted from a drive on Linux
+  (`/proc/mounts`, without the system's own and network mounts), `/` and `/Volumes/*` on
+  macOS.
 
 ## Built on JFLib
 

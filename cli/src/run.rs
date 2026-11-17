@@ -14,7 +14,7 @@ use crate::jobs::{self, Request};
 use crate::{ctx, fleet, parse, say, CmdResult, Reply};
 
 const RUN_VALUED: &[&str] = &["--worker", "--needs", "--cpu", "--ram", "--timeout", "--out", "--env", "--slot", "--cwd", "--sh", "--shell", "--label", "--to"];
-const RUN_FLAGS: &[&str] = &["--detach", "--no-sync", "--no-fetch", "--quiet", "--all"];
+const RUN_FLAGS: &[&str] = &["--detach", "--no-sync", "--no-fetch", "--quiet", "--all", "--light", "--leave-running"];
 const RUN_SHORT: &[(&str, &str)] = &[("-w", "--worker"), ("-d", "--detach"), ("-q", "--quiet"), ("-o", "--out")];
 
 /// the options of `bb run` that `bb task` and `bb sync` share, laid over a request
@@ -48,6 +48,12 @@ fn overrides(cli: &Cli, r: &mut Request) -> Result<(), String> {
     if cli.flag("--no-sync") {
         r.sync = false;
     }
+    if cli.flag("--light") {
+        r.light = true;
+    }
+    if cli.flag("--leave-running") {
+        r.leave_running = true;
+    }
     Ok(())
 }
 
@@ -67,6 +73,7 @@ fn task_request(t: &Task) -> Request {
         slot: t.slot.clone(),
         label: t.name.clone(),
         sync: true,
+        ..Request::default()
     }
 }
 

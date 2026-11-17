@@ -11,7 +11,7 @@ use bb_main::conf::{JobRec, MainConfig, PairedWorker, Project, Task};
 use bb_main::fleet::{self, Needs, WorkerView};
 use bb_main::ops::{self, Pairing};
 use bb_worker::cleanup;
-use bb_worker::config::Config;
+use bb_worker::config::{self, Config, Store};
 use ui::*;
 
 use crate::id;
@@ -121,6 +121,134 @@ pub fn connect(g: &mut Gui, ui: &mut Ui) {
 
 // ------------------------------------------------------------------------- this machine
 
+/// a place projects can be kept in, as the drives section shows it
+struct DriveRow {
+    /// what the setting names: "" the data folder, else a drive or a folder (Store::path)
+    path: String,
+    label: String,
+    free: u64,
+    total: u64,
+    there: bool,
+}
+
+/// "C:" for "C:/", the last part of a mount point, a folder as it is
+fn drive_label(path: &str) -> String {
+    if let Some(letter) = path.strip_suffix(":/") {
+        return format!("{}:", letter);
+    }
+    if path == "/" {
+        return String::from(t("Systemlaufwerk"));
+    }
+    let last = path.rsplit('/').next().unwrap_or(path);
+    if path.starts_with("/media/") || path.starts_with("/run/media/") || path.starts_with("/mnt/") || path.starts_with("/Volumes/") { String::from(last) } else { String::from(path) }
+}
+
+/// The drives projects may be kept on, one row each: a switch, how much, what is free.  The
+/// drive of the data folder is Config::disk, every other one a Store.  -> the events of its
+/// widgets, as the card's sliders give them.
+fn drives(g: &Gui, ui: &mut Ui, c: &mut Config) -> u32 {
+    let mut rows: Vec<DriveRow> = Vec::new();
+    let data = g.data_volume();
+    let (dfree, dtotal) = match data.and_then(|i| g.volumes.get(i)) {
+        Some(v) => (v.free, v.total),
+        None => plat::fs::free_space(&g.worker_dir).unwrap_or((0, 0)),
+    };
+    let data_label = data.and_then(|i| g.volumes.get(i)).map(|v| drive_label(&v.path)).unwrap_or_default();
+    rows.push(DriveRow { path: String::new(), label: if data_label.is_empty() { String::from(t("Datenordner")) } else { tf("{} (Datenordner)", &[&data_label]) }, free: dfree, total: dtotal, there: true });
+    for (i, v) in g.volumes.iter().enumerate() {
+        if Some(i) != data {
+            rows.push(DriveRow { path: v.path.clone(), label: drive_label(&v.path), free: v.free, total: v.total, there: true });
+        }
+    }
+    // drives named before that are not there now, and folders named on the command line
+    for st in &c.stores {
+        if !rows.iter().any(|r| !r.path.is_empty() && config::same_path(&r.path, &st.path)) {
+            let (free, total) = plat::fs::free_space(&st.path).unwrap_or((0, 0));
+            let there = g.demo || plat::file_exists(&st.path) == 2;
+            // (one that was switched off and is not there: nothing to show or to do)
+            if there || st.disk > 0 {
+                rows.push(DriveRow { path: st.path.clone(), label: drive_label(&st.path), free, total, there });
+            }
+        }
+    }
+    // (ids WORKER+110 .. +199, below PROJECT_ROW)
+    rows.truncate(40);
+
+    ui.spacer(4);
+    ui.text(TS_BODY_STRONG, t("Platz für Projekte"));
+    let mut changed = 0u32;
+    ui.gridbox_begin(id::WORKER + 100, &[230, -1, 250], 0, 10);
+    for (i, r) in rows.iter().enumerate() {
+        let lent = if r.path.is_empty() { c.disk } else { c.stores.iter().find(|s| config::same_path(&s.path, &r.path)).map_or(0, |s| s.disk) };
+        let used = g.place_used.iter().find(|(p, _)| p == &r.path || (!p.is_empty() && !r.path.is_empty() && config::same_path(p, &r.path))).map_or(0, |x| x.1);
+        // anything else lent that is there: a place may only be switched off beside it
+        let others = (!r.path.is_empty() && c.disk > 0) || c.stores.iter().any(|s| s.disk > 0 && !config::same_path(&s.path, &r.path) && (g.demo || plat::file_exists(&s.path) == 2));
+        // (a switch and a slider each, in ranges of their own: ids next to each other clash)
+        let (id_on, id_amount) = (id::WORKER + 110 + i as u32, id::WORKER + 155 + i as u32);
+        let mut on = (lent > 0) as i32;
+        if !r.there {
+            ui.disabled_push();
+        }
+        let ev = ui.switch(id_on, &r.label, &mut on);
+        if !r.there {
+            ui.disabled_pop();
+        }
+        if ev & EV_ACT != 0 {
+            changed |= EV_ACT << 1;
+            if on == 0 && !others {
+                ui.toast(IB_WARNING, t("Nicht möglich"), t("Mindestens ein Laufwerk muss Platz für Projekte hergeben."), 0);
+            } else {
+                // switched on: half of what is free, at most 50 GiB in the data folder and 200 GiB on a drive of its own
+                let first = if on == 0 { 0 } else { (r.free / 2).min(if r.path.is_empty() { 50 << 30 } else { 200 << 30 }).max(1 << 30) };
+                set_lent(c, &r.path, first);
+            }
+        }
+        let lent = if r.path.is_empty() { c.disk } else { c.stores.iter().find(|s| config::same_path(&s.path, &r.path)).map_or(0, |s| s.disk) };
+        // How much: in GiB, up to what is free plus what the projects there take already.
+        // (Never below the slider's 1: a value outside its range is set right by the slider,
+        // and the frame would be built again and again -- a drive that is off shows 1.)
+        let mut gib = ((lent >> 30) as i32).max(1);
+        let gib0 = gib;
+        let max = (((r.free + used) >> 30) as i32).max(gib).max(2);
+        if lent == 0 || !r.there {
+            ui.disabled_push();
+        }
+        changed |= ui.slider(id_amount, &mut gib, &Range::new(1, max, 1, 0));
+        if lent == 0 || !r.there {
+            ui.disabled_pop();
+        }
+        if gib != gib0 && lent > 0 {
+            set_lent(c, &r.path, (gib as u64) << 30);
+        }
+        let shown = if gib != gib0 { (gib as u64) << 30 } else { lent };
+        let text = if !r.there {
+            String::from(t("nicht angeschlossen"))
+        } else if lent == 0 && used > 0 {
+            String::from(t("wird geleert …"))
+        } else if lent > 0 {
+            tf("{} für Projekte · {} frei", &[&size_text(shown), &size_text(r.free)])
+        } else {
+            tf("{} von {} verfügbar", &[&size_text(r.free), &size_text(r.total)])
+        };
+        ui.text(TS_BODY | TX_SECONDARY, &text);
+    }
+    ui.gridbox_end();
+    ui.next_size(-1, 0);
+    ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, t("Ein Laufwerk zählt nur, solange es angeschlossen ist. Wird eines ausgeschaltet, wird geleert, was dort liegt – ein Projekt wird beim nächsten Auftrag einfach neu übertragen."));
+    changed
+}
+
+/// what is lent in a place: the data folder ("") or a drive -- 0 switches it off
+fn set_lent(c: &mut Config, path: &str, bytes: u64) {
+    if path.is_empty() {
+        c.disk = bytes;
+    } else if let Some(s) = c.stores.iter_mut().find(|s| config::same_path(&s.path, path)) {
+        s.disk = bytes;
+    } else if bytes > 0 {
+        c.stores.push(Store { path: String::from(path), disk: bytes });
+    }
+}
+
 pub fn worker(g: &mut Gui, ui: &mut Ui) {
     let Some(cfg) = g.wcfg.clone() else {
         ui.empty_state(IC_POWER, t("Dieses Gerät verleiht noch nichts"), t("Mit einem Hauptgerät koppeln, dann kann es Builds hierher schicken. Wie viel dieser Rechner hergibt, bestimmst du."));
@@ -164,13 +292,11 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     let ram_total = plat::mem_total().max(1 << 30);
     let half_gib = 1u64 << 29;
     let mut c = cfg.clone();
-    let (mut cpu, mut ram, mut disk) = (c.cpu as i32, (c.ram / half_gib) as i32, (c.disk >> 30) as i32);
+    let (mut cpu, mut ram) = (c.cpu as i32, (c.ram / half_gib) as i32);
     // The sliders count in steps (half a GiB, a GiB).  Only a value its widget changed is
     // taken over: one set elsewhere to something in between (bb-worker config --disk 50%) must
     // not be rounded, and marked as changed here, by merely being shown.
-    let (cpu0, ram0, disk0) = (cpu, ram, disk);
-    let free_gib = plat::fs::free_space(&g.worker_dir).map_or(500, |f| (f.0 >> 30) as i32);
-    let disk_max = (free_gib + (g.projects.iter().map(|p| p.bytes).sum::<u64>() >> 30) as i32).max(disk).max(2);
+    let (cpu0, ram0) = (cpu, ram);
     let mut changed = 0u32;
     ui.gridbox_begin(id::WORKER + 10, &[150, -1, 190], 0, 10);
     ui.text(TS_BODY, t("Prozessoren"));
@@ -179,13 +305,14 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     ui.text(TS_BODY, t("Arbeitsspeicher"));
     changed |= ui.slider(id::WORKER + 12, &mut ram, &Range::new(1, (ram_total / half_gib) as i32, 1, 0));
     ui.text(TS_BODY | TX_SECONDARY, &tf("{} von {}", &[&size_text(if ram == ram0 { c.ram } else { ram as u64 * half_gib }), &size_text(ram_total)]));
-    ui.text(TS_BODY, t("Festplatte"));
-    changed |= ui.slider(id::WORKER + 13, &mut disk, &Range::new(1, disk_max, 1, 0));
-    ui.text(TS_BODY | TX_SECONDARY, &tf("{} für Projekte", &[&size_text(if disk == disk0 { c.disk } else { (disk as u64) << 30 })]));
     ui.gridbox_end();
+    changed |= drives(g, ui, &mut c);
     let low0 = (c.priority != "normal") as i32;
     let mut low = low0;
     changed |= ui.switch(id::WORKER + 14, t("Rücksicht nehmen: Aufträge laufen mit niedriger Priorität"), &mut low) << 1;
+    let leave0 = c.leave_running as i32;
+    let mut leave = leave0;
+    changed |= ui.switch(id::WORKER + 17, t("Aufträge dürfen Programme starten, die nach ihnen weiterlaufen (bb run --leave-running)"), &mut leave) << 1;
     ui.box_begin(0, BOX_H | BOX_XCENTER, 8);
     let (mut jobs, mut keep) = (c.jobs.max(1) as i32, c.keep_days as i32);
     let (jobs0, keep0) = (jobs, keep);
@@ -203,11 +330,11 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     if ram != ram0 {
         c.ram = ram as u64 * half_gib;
     }
-    if disk != disk0 {
-        c.disk = (disk as u64) << 30;
-    }
     if low != low0 {
         c.priority = String::from(if low != 0 { "low" } else { "normal" });
+    }
+    if leave != leave0 {
+        c.leave_running = leave != 0;
     }
     if jobs != jobs0 {
         c.jobs = jobs as u32;
@@ -236,7 +363,8 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
                 ui.badge(kind, label);
                 ui.next_size(-1, 0);
                 ui.text(TS_BODY | TX_ELLIPSIS, &format!("{} · {}", b.project, b.command));
-                ui.text(TS_CAPTION | TX_SECONDARY, &tf("{} Prozessoren", &[&format!("{}", b.cpu)]));
+                // (a light job holds none: it runs beside the others)
+                ui.text(TS_CAPTION | TX_SECONDARY, &if b.cpu == 0 { String::from(t("leicht, neben den anderen")) } else { tf("{} Prozessoren", &[&format!("{}", b.cpu)]) });
                 ui.box_end();
                 let _ = i;
             }
@@ -251,7 +379,9 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     ui.next_size(-1, 0);
     ui.heading(2, TS_BODY_STRONG, t("Projekte auf diesem Gerät"));
     let total: u64 = g.projects.iter().map(|p| p.bytes).sum();
-    ui.text(TS_CAPTION | TX_SECONDARY, &tf("{} von {} belegt", &[&size_text(total), &size_text(cfg.disk)]));
+    // (what is lent on every drive that is there)
+    let lent = cfg.disk + cfg.stores.iter().filter(|s| g.demo || plat::file_exists(&s.path) == 2).map(|s| s.disk).sum::<u64>();
+    ui.text(TS_CAPTION | TX_SECONDARY, &tf("{} von {} belegt", &[&size_text(total), &size_text(lent)]));
     let cleaning = g.clean_task.is_some();
     if g.projects.is_empty() || cleaning {
         ui.next_flags(ST_DISABLED);
@@ -469,7 +599,7 @@ fn worker_card(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView) {
         let n = |x: u32| format!("{}", x);
         ui.gridbox_begin(base + 1, &[-1, -1, -1], 0, 16);
         meter_cell(ui, base + 2, t("Prozessoren"), &tf("{} von {} frei · {} im Gerät", &[&n(s.cpu_idle()), &n(s.offer.cpu), &n(s.cpu_total)]), s.cpu_reserved as u64, s.offer.cpu as u64);
-        meter_cell(ui, base + 3, t("Arbeitsspeicher"), &tf("{} von {} frei", &[&size_text(s.ram_idle()), &size_text(s.offer.ram)]), s.ram_reserved, s.offer.ram);
+        meter_cell(ui, base + 3, t("Arbeitsspeicher"), &tf("{} von {} frei", &[&size_text(s.ram_idle()), &size_text(s.offer.ram)]), s.offer.ram - s.ram_idle().min(s.offer.ram), s.offer.ram);
         meter_cell(ui, base + 4, t("Festplatte für Projekte"), &tf("{} von {} belegt", &[&size_text(s.disk_used), &size_text(s.offer.disk)]), s.disk_used, s.offer.disk);
         ui.gridbox_end();
         if !s.tools.is_empty() {
@@ -899,7 +1029,7 @@ fn demo_status(name: &str, os: &str, cpu: (u32, u32, u32), ram_gib: (u64, u64), 
         tools: state::tools(tool_names),
         ..WorkerStatus::default()
     };
-    s.ram_reserved = (ram_gib.1 - ram_gib.0) << 30;
+    s.ram_used = (ram_gib.1 - ram_gib.0) << 30;
     s
 }
 
@@ -908,7 +1038,25 @@ pub fn demo(g: &mut Gui) {
     // a newer version, so the settings show what they are for
     g.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from("0.2.0"), newer: true });
     g.lend = 1;
-    g.wcfg = Some(Config { name: String::from("laptop"), id: String::from("w-demo000001"), main_name: String::from("werkbank"), cpu: 6, ram: 12 << 30, disk: 40 << 30, jobs: 4, priority: String::from("low"), keep_days: 14, ..Config::default() });
+    g.wcfg = Some(Config {
+        name: String::from("laptop"),
+        id: String::from("w-demo000001"),
+        main_name: String::from("werkbank"),
+        cpu: 6,
+        ram: 12 << 30,
+        disk: 40 << 30,
+        stores: alloc::vec![Store { path: String::from("/media/laptop/Extern"), disk: 200 << 30 }],
+        jobs: 4,
+        priority: String::from("low"),
+        keep_days: 14,
+        ..Config::default()
+    });
+    g.volumes = alloc::vec![
+        bb_exec::sys::Volume { path: String::from("/"), free: 182 << 30, total: 476 << 30 },
+        bb_exec::sys::Volume { path: String::from("/media/laptop/Extern"), free: 1700 << 30, total: 1863 << 30 },
+        bb_exec::sys::Volume { path: String::from("/media/laptop/STICK"), free: 54 << 30, total: 58 << 30 },
+    ];
+    g.place_used = alloc::vec![(String::new(), 8 << 30), (String::from("/media/laptop/Extern"), 3 << 30)];
     let mut me = demo_status("laptop", "linux", (2, 6, 8), (8, 12), (11, 40), &["cargo", "rustc", "gcc", "g++", "clang", "cmake", "make", "python3", "git"]);
     me.running = alloc::vec![state::brief("j-k7m2x9pq4d", "kritzel", proto::ST_RUNNING, 4, "cargo build --release")];
     g.wstatus = Some(me.clone());

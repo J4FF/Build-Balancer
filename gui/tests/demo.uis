@@ -23,6 +23,23 @@ expect text:"netzlabor-alt" missing
 # the two notes about it go by themselves
 wait 7000
 
+# the drives projects are kept on (310 + row: the data folder's, "Extern", "STICK")
+expect "Platz für Projekte" exists
+expect text:"200 GiB für Projekte · 1.7 TiB frei" exists
+expect text:"54.0 GiB von 58.0 GiB verfügbar" exists
+# a drive switched on gets half of what is free there
+click #312
+expect text:"27.0 GiB für Projekte · 54.0 GiB frei" exists
+# one switched off is emptied (the projects on "Extern" take 3 GiB)
+click #311
+expect text:"wird geleert …" exists
+# the last one cannot be switched off: projects need a place
+click #312
+click #310
+expect text:"Mindestens ein Laufwerk muss Platz für Projekte hergeben." exists
+expect text:"40.0 GiB für Projekte · 182 GiB frei" exists
+wait 7000
+
 # the main machine's workers
 click #21
 expect "Gerät hinzufügen" exists

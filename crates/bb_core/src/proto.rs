@@ -160,10 +160,15 @@ record! {
         pub disk_free: u64,
         /// what the owner lends
         pub offer: Offer,
-        /// what running jobs hold of it
+        /// what running jobs hold of it (ram_reserved: what they asked for with --ram)
         pub cpu_reserved: u32,
         pub ram_reserved: u64,
         pub disk_used: u64,
+        /// the memory running jobs hold: each what it asked for or, when more, what its
+        /// processes take (measured).  A worker before 0.1.4 does not say: 0.
+        pub ram_used: u64,
+        /// whether its owner lets jobs start programs that outlive them (bb run --leave-running)
+        pub leave_running: bool,
         /// how each limit is held: "affinity", "job-object", "watchdog", "quota", "none"
         pub enforce_cpu: String,
         pub enforce_ram: String,
@@ -183,8 +188,16 @@ impl WorkerStatus {
         self.offer.cpu.saturating_sub(self.cpu_reserved)
     }
 
+    /// the lent memory running jobs hold
+    pub fn ram_held(&self) -> u64 {
+        self.ram_reserved.max(self.ram_used)
+    }
+
+    /// The lent memory a job could still get: what the running jobs do not hold of it -- and
+    /// not more than the machine has free right now, where other programs take their share.
     pub fn ram_idle(&self) -> u64 {
-        self.offer.ram.saturating_sub(self.ram_reserved)
+        let idle = self.offer.ram.saturating_sub(self.ram_held());
+        if self.ram_free > 0 { idle.min(self.ram_free) } else { idle }
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
@@ -241,6 +254,14 @@ record! {
         pub ram: u64,
         /// seconds until it is stopped (0: never)
         pub timeout: u64,
+        /// A light job: it holds no processors and starts at once, beside the jobs that do --
+        /// a screenshot, a look at a log.  LIGHT_AT_ONCE at a time, LIGHT_SECS at most.  (A
+        /// worker before 0.1.4 does not know it: it runs one as a job of `cpu` processors.)
+        pub light: bool,
+        /// Start the program and leave it running: the job ends as soon as it has started, and
+        /// the worker neither holds, watches nor ends the program.  Only where the worker's
+        /// owner allows it (WorkerStatus::leave_running).  Always light.
+        pub leave_running: bool,
         /// files to send back: glob patterns inside the workspace
         pub outputs: Vec<String>,
         pub created: i64,
@@ -248,6 +269,11 @@ record! {
         pub label: String,
     }
 }
+
+/// light jobs that run at once on a worker, beside the others
+pub const LIGHT_AT_ONCE: usize = 2;
+/// how long a light job may run at most (seconds)
+pub const LIGHT_SECS: u64 = 600;
 
 impl JobSpec {
     /// the command on one line, for lists and logs

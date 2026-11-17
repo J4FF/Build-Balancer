@@ -184,7 +184,8 @@ pub fn view_json(v: &WorkerView) -> Value {
     o.insert("status_age_seconds", Value::i64((bb_core::util::now() - s.time).max(0)));
     o.insert("cpu_model", j::s(&s.cpu_model));
     o.insert("cpu", j::obj([("total", j::n(s.cpu_total as u64)), ("lent", j::n(s.offer.cpu as u64)), ("idle", j::n(s.cpu_idle() as u64)), ("machine_busy_percent", j::n(s.cpu_busy as u64))]));
-    o.insert("ram", j::obj([("total", j::n(s.ram_total)), ("free_now", j::n(s.ram_free)), ("lent", j::n(s.offer.ram)), ("idle", j::n(s.ram_idle()))]));
+    o.insert("leave_running", Value::Bool(s.leave_running));
+    o.insert("ram", j::obj([("total", j::n(s.ram_total)), ("free_now", j::n(s.ram_free)), ("lent", j::n(s.offer.ram)), ("held", j::n(s.ram_held())), ("idle", j::n(s.ram_idle()))]));
     o.insert("disk", j::obj([("lent", j::n(s.offer.disk)), ("used", j::n(s.disk_used)), ("free_on_volume", j::n(s.disk_free))]));
     o.insert("limits_held_by", j::obj([("cpu", j::s(&s.enforce_cpu)), ("ram", j::s(&s.enforce_ram)), ("disk", j::s(&s.enforce_disk))]));
     o.insert("jobs_at_once", j::n(s.offer.jobs as u64));

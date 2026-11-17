@@ -182,6 +182,80 @@ start_worker
 check "the job that waited runs after a restart" 0 $?
 check "the job that ran is reported as interrupted" error "$(state_of "$ran")"
 
+# what a job takes of the lent memory shows, also when it asked for none (python: a program that
+# takes 600 MB and holds it; the check is passed over where there is no python)
+py=python3
+command -v python3 >/dev/null 2>&1 || py=python
+if command -v "$py" >/dev/null 2>&1; then
+    held() { "$bb" workers --json | grep '"held"' | head -1 | sed 's/[^0-9]//g'; }
+    holds() { [ "$(held)" -ge 400000000 ] 2>/dev/null && echo yes; }
+    hog=$("$bb" run -d --json --no-sync -- "$py" -c "import time; b = bytearray(600 << 20); b[::4096] = b'x' * len(b[::4096]); time.sleep(15)" | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+    check "the memory a job takes counts against what is lent" yes "$(wait_for 30 holds)"
+    "$bb" wait "$hog" --timeout 1m >/dev/null 2>&1
+fi
+
+# another drive (here a folder of the test): projects are kept there, with a limit of its own; a
+# drive that is not there is passed over; one that is given up is emptied by the running worker
+drive="$work/extern"
+mkdir -p "$drive"
+wid=$(grep '"id"' "$work/worker/worker.json" | head -1 | sed 's/.*: "\(.*\)".*/\1/')
+on_drive() { ls "$drive/BuildBalancer/$wid/ws" 2>/dev/null | wc -l | tr -d ' '; }
+taken() { grep -c "settings taken over: .*$1" "$work/worker/logs/worker.log" 2>/dev/null; }
+taken_over() { [ "$(taken "$1")" -gt "$2" ] && echo yes; }
+"$bin/bb-worker$ext" drives --data "$work/worker" >"$work/drives.out" 2>&1
+check "bb-worker drives lists the drives of this machine" 0 $?
+check "... the data folder's among them" 1 "$(grep -c "the data folder" "$work/drives.out")"
+"$bin/bb-worker$ext" config --data "$work/worker" --store "$work/no-such-drive=1G" >"$work/drive.out" 2>&1
+check "a drive that is not there is refused" 1 "$(grep -c "is not there" "$work/drive.out")"
+n=$(taken "1.0 GiB on")
+"$bin/bb-worker$ext" config --data "$work/worker" --store "$drive=1G" --disk 0 >"$work/drive.out" 2>&1
+check "bb-worker config --store DRIVE=SIZE" 0 $?
+check "... names the drive" 1 "$(grep -c "drive .*extern.*1.0 GiB" "$work/drive.out")"
+check "... the running worker takes it over" yes "$(wait_for 20 taken_over "1.0 GiB on" "$n")"
+check "... and empties the data folder, which lends nothing now" yes "$(wait_for 20 nothing_kept)"
+"$bb" run -q --out out.txt --sh "$script"
+check "a job runs with its project on the other drive" "changed" "$(tr -d '\r' <out.txt 2>/dev/null)"
+check "... which holds the project" 1 "$(on_drive)"
+check "... and nothing in the data folder" 0 "$(kept)"
+# unplugged: the next job takes the data folder (which lends again), and is sent the project anew
+mv "$drive" "$drive.away"
+n=$(taken "1.0 GiB disk")
+"$bin/bb-worker$ext" config --data "$work/worker" --disk 1G >/dev/null
+wait_for 20 taken_over "1.0 GiB disk" "$n" >/dev/null
+"$bb" run -q --out out.txt --sh "$script"
+check "a drive that is not there is passed over" 1 "$(kept)"
+check "... and shown as such" 1 "$("$bin/bb-worker$ext" config --data "$work/worker" | grep -c "not there right now")"
+# plugged in again and given up: the worker empties it, and it is gone from the settings
+mv "$drive.away" "$drive"
+"$bin/bb-worker$ext" config --data "$work/worker" --store "$drive=off" >/dev/null
+check "bb-worker config --store DRIVE=off" 0 $?
+gone() { [ ! -e "$drive/BuildBalancer" ] && echo yes; }
+check "... the running worker empties the drive" yes "$(wait_for 20 gone)"
+check "... and it is not named any more" 0 "$("$bin/bb-worker$ext" config --data "$work/worker" | grep -c "extern")"
+
+# a light job starts at once beside a job that holds every lent processor
+job_of() { grep '"job"' | sed 's/.*: "\(.*\)".*/\1/'; }
+big=$("$bb" run -d --json --sh "$slow" | job_of)
+wait_for 30 in_state "$big" running >/dev/null || die "the long job did not get to run" "$work/worker.out"
+"$bb" run -q --light --no-sync --sh "echo light" >"$work/light.out" 2>&1
+check "a light job runs at once beside a job that holds every processor" light "$(tr -d '\r ' <"$work/light.out")"
+check "... while that one still runs" running "$(state_of "$big")"
+# a program a job starts and leaves running: only where the worker's owner allows it
+"$bb" run -q --leave-running --no-sync --sh "echo x" >"$work/leave.out" 2>&1
+check "a program is left running only where the worker's owner allows it" 1 "$(grep -c -- "--leave-running yes" "$work/leave.out")"
+"$bin/bb-worker$ext" config --data "$work/worker" --leave-running yes >/dev/null
+allowed() { "$bb" workers --json | grep -q '"leave_running": true' && echo yes; }
+wait_for 30 allowed >/dev/null || die "the worker did not say that it allows it" "$work/worker.out"
+if [ "$win" = 1 ]; then later="ping -n 4 127.0.0.1 >nul & echo alive> \"$work/alive.txt\""; else later="sleep 3; echo alive > '$work/alive.txt'"; fi
+"$bb" run -q --leave-running --no-sync --sh "$later" >"$work/leave.out" 2>&1
+check "bb run --leave-running ends as soon as the program has started" 0 $?
+check "... says so" 1 "$(grep -c "started and left running" "$work/leave.out")"
+check "... before the program is through" no "$([ -f "$work/alive.txt" ] && echo yes || echo no)"
+alive() { [ -f "$work/alive.txt" ] && echo yes; }
+check "... which goes on after the job's end" yes "$(wait_for 30 alive)"
+"$bb" cancel "$big" >/dev/null 2>&1
+wait_for 30 in_state "$big" cancelled >/dev/null
+
 # a machine that only paired: the main machine says what is missing there
 second_code() { grep "bb-worker join" "$work/pair2.out" 2>/dev/null | awk '{print $4}'; }
 "$bb" pair >"$work/pair2.out" 2>&1 &

@@ -49,8 +49,8 @@ const SERVICE: &str = if cfg!(windows) {
 } else {
     "buildbalancer-worker"
 };
-const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user"];
-const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root", "--check"];
+const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--leave-running"];
+const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--leave-running", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root", "--check"];
 
 fn fail(s: &str) -> i32 {
     plat::log_error("worker", s);
@@ -63,7 +63,12 @@ fn usage() -> i32 {
          bb-worker run                      lend, in this terminal, until stopped\n\
          bb-worker config [--cpu ..] [--ram ..] [--disk ..] [--jobs N] [--priority low|normal]\n\
          \x20                [--keep-days N] [--tags a,b] [--tools x,y] [--name NAME]     show or change what is lent\n\
+         \x20                [--store DRIVE=SIZE ..]   keep projects on another drive, too: --store E:=200G,\n\
+         \x20                                          --store /media/me/Stick=50%  (DRIVE=off gives it up;\n\
+         \x20                                          --disk 0: nothing in the data folder itself)\n\
+         \x20                [--leave-running yes|no]  may jobs start programs that go on after them\n\
          bb-worker status\n\
+         bb-worker drives                   the drives projects can be kept on, with their free space\n\
          bb-worker tools                    the build tools jobs can use on this machine\n\
          bb-worker clean [PROJECT | --all]  remove a project's files here (no argument: list them)\n\
          bb-worker leave [--purge]          forget the pairing (--purge: and every file kept here)\n\
@@ -116,6 +121,7 @@ fn run() -> i32 {
         "update" => update_cmd(&cli, &dir),
         "config" => config_cmd(&cli, &dir),
         "status" => status_cmd(&dir),
+        "drives" => drives_cmd(&dir),
         "tools" => {
             // what a job on this machine can use, as this user (a service sees its own PATH)
             let t0 = tick_ms();
@@ -253,6 +259,16 @@ fn config_cmd(cli: &Cli, dir: &str) -> i32 {
     let Some(mut c) = config::load(dir) else { return fail(&not_paired(dir)) };
     match config::apply_options(&mut c, cli, dir) {
         Ok(true) => {
+            // A drive that was given up: with no worker running here, what lies on it goes
+            // right now; a worker that runs does it (it knows where a job is at work).
+            if let Some(_lock) = plat::FileLock::acquire(&plat::fs::join(dir, "worker.lock")) {
+                // (written first: the removing goes by the drives the folder's settings name)
+                if let Err(e) = config::save(dir, &c) {
+                    return fail(&e);
+                }
+                cleanup::give_up(dir, &c, &|r, p, s| cleanup::remove_in(r, p, s));
+            }
+            cleanup::forget_given_up(&mut c);
             if let Err(e) = config::save(dir, &c) {
                 return fail(&e);
             }
@@ -273,6 +289,45 @@ fn project_lines(dir: &str) -> String {
         return String::from("  no project has files here\n");
     }
     list.iter().map(|p| format!("  {:<24} {:>10}   used {} ago   {} slot(s)   {}\n", p.name, size_text(p.bytes), bb_core::util::ago_text(p.used), p.slots.len(), p.id)).collect()
+}
+
+/// bb-worker drives: what --store can name
+fn drives_cmd(dir: &str) -> i32 {
+    let c = config::load(dir);
+    let list = bb_exec::sys::volumes();
+    if list.is_empty() {
+        out("no drive with room for files was found\n");
+        return 1;
+    }
+    // the drive of the data folder: the nearest folder on the way to it that is there
+    let mut p = dir;
+    let data = loop {
+        if let Some(m) = plat::fs::stat(p) {
+            break Some(m.dev);
+        }
+        let up = plat::fs::parent(p);
+        if up.is_empty() || up == p {
+            break None;
+        }
+        p = up;
+    };
+    out("drives projects can be kept on:\n");
+    for v in &list {
+        let dev = plat::fs::stat(&v.path).map(|m| m.dev);
+        let mut notes: Vec<String> = Vec::new();
+        if dev.is_some() && dev == data {
+            notes.push(match &c {
+                Some(c) if c.disk > 0 => format!("the data folder: {} lent", size_text(c.disk)),
+                _ => String::from("the data folder"),
+            });
+        }
+        if let Some(s) = c.as_ref().and_then(|c| c.stores.iter().find(|s| config::same_path(&s.path, &v.path))) {
+            notes.push(if s.disk > 0 { format!("{} lent", size_text(s.disk)) } else { String::from("given up") });
+        }
+        out(&format!("  {:<28} {:>10} free of {:>10}   {}\n", v.path, size_text(v.free), size_text(v.total), notes.join(", ")));
+    }
+    out("keep projects on one of them, too:  bb-worker config --store DRIVE=SIZE   (SIZE like 200G, or 50% of its free space)\n");
+    0
 }
 
 fn status_cmd(dir: &str) -> i32 {
