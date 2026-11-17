@@ -195,8 +195,13 @@ fn drives(g: &Gui, ui: &mut Ui, c: &mut Config) -> u32 {
         }
         if ev & EV_ACT != 0 {
             changed |= EV_ACT << 1;
+            // (the list is a few seconds old: a drive taken out meanwhile leaves an empty mount
+            // point, which is a folder on another drive -- a folder named as one is fine)
+            let folder = c.stores.iter().any(|s| !s.mount && config::same_path(&s.path, &r.path));
             if on == 0 && !others {
                 ui.toast(IB_WARNING, t("Nicht möglich"), t("Mindestens ein Laufwerk muss Platz für Projekte hergeben."), 0);
+            } else if on != 0 && !g.demo && !r.path.is_empty() && !folder && !config::mount_point(&r.path) {
+                ui.toast(IB_WARNING, t("Nicht angeschlossen"), t("Dieses Laufwerk ist gerade nicht eingehängt."), 0);
             } else {
                 // switched on: half of what is free, at most 50 GiB in the data folder and 200 GiB on a drive of its own
                 let first = if on == 0 { 0 } else { (r.free / 2).min(if r.path.is_empty() { 50 << 30 } else { 200 << 30 }).max(1 << 30) };

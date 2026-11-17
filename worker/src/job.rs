@@ -588,7 +588,8 @@ fn leave_running(w: &Worker, spec: &JobSpec, jd: &str, allowed: bool, worker: &s
     }
     // what it says at first: a program that could not start says it there
     plat::sleep_ms(1500);
-    let first = plat::read_file(&log_path).map(|b| String::from_utf8_lossy(&b[..b.len().min(2048)]).into_owned()).unwrap_or_default();
+    let mut head = [0u8; 2048];
+    let first = plat::File::open(&log_path, plat::FO_READ).and_then(|f| f.read_at(0, &mut head)).map(|n| String::from_utf8_lossy(&head[..n]).into_owned()).unwrap_or_default();
     let mut log = LogBuf::new(jd, Emitter::new(w, &spec.main, &spec.id));
     let line = format!(
         "handed to the system to start and left running on {}{}: {}\nthe worker does not hold, watch or end it; whether it runs, and what it says, is in {} there{}\n",

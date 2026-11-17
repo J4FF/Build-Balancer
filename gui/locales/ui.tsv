@@ -242,3 +242,5 @@ Nicht alles auf dem ausgeschalteten Laufwerk ließ sich entfernen (eine Datei is
 Systemlaufwerk	System drive
 Aufträge dürfen Programme starten, die nach ihnen weiterlaufen (bb run --leave-running)	Jobs may start programs that go on after them (bb run --leave-running)
 leicht, neben den anderen	light, beside the others
+Nicht angeschlossen	Not plugged in
+Dieses Laufwerk ist gerade nicht eingehängt.	This drive is not mounted right now.

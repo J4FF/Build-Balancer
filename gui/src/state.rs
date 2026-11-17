@@ -391,9 +391,16 @@ impl Gui {
         }
         {
             let dir = self.worker_dir.clone();
+            // (a worker that was switched off may still be ending its jobs: it holds their
+            // workspaces free of removal until they are through)
+            let winding = self.winding.clone();
             self.clean_task = Some(ui.spawn(spawn_blocking(move || {
                 let _lock = plat::FileLock::acquire(&plat::fs::join(&dir, "worker.lock")).ok_or_else(|| String::from(t("Ein anderer Worker arbeitet auf diesem Datenordner: er leert das Laufwerk.")))?;
-                if cleanup::give_up(&dir, &c, &|r, p, s| cleanup::remove_in(r, p, s)) {
+                let remove = |r: &str, p: &str, s: &str| match &winding {
+                    Some(w) => w.remove_in(r, p, s),
+                    None => cleanup::remove_in(r, p, s),
+                };
+                if cleanup::give_up(&dir, &c, &remove) {
                     Ok(String::from(t("Was auf dem ausgeschalteten Laufwerk lag, ist entfernt.")))
                 } else {
                     Err(String::from(t("Nicht alles auf dem ausgeschalteten Laufwerk ließ sich entfernen (eine Datei ist in einem anderen Programm geöffnet).")))
