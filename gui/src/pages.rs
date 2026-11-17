@@ -164,7 +164,7 @@ fn drives(g: &Gui, ui: &mut Ui, c: &mut Config) -> u32 {
     for st in &c.stores {
         if !rows.iter().any(|r| !r.path.is_empty() && config::same_path(&r.path, &st.path)) {
             let (free, total) = plat::fs::free_space(&st.path).unwrap_or((0, 0));
-            let there = g.demo || plat::file_exists(&st.path) == 2;
+            let there = g.demo || config::store_there(st);
             // (one that was switched off and is not there: nothing to show or to do)
             if there || st.disk > 0 {
                 rows.push(DriveRow { path: st.path.clone(), label: drive_label(&st.path), free, total, there });
@@ -182,7 +182,7 @@ fn drives(g: &Gui, ui: &mut Ui, c: &mut Config) -> u32 {
         let lent = if r.path.is_empty() { c.disk } else { c.stores.iter().find(|s| config::same_path(&s.path, &r.path)).map_or(0, |s| s.disk) };
         let used = g.place_used.iter().find(|(p, _)| p == &r.path || (!p.is_empty() && !r.path.is_empty() && config::same_path(p, &r.path))).map_or(0, |x| x.1);
         // anything else lent that is there: a place may only be switched off beside it
-        let others = (!r.path.is_empty() && c.disk > 0) || c.stores.iter().any(|s| s.disk > 0 && !config::same_path(&s.path, &r.path) && (g.demo || plat::file_exists(&s.path) == 2));
+        let others = (!r.path.is_empty() && c.disk > 0) || c.stores.iter().any(|s| s.disk > 0 && !config::same_path(&s.path, &r.path) && (g.demo || config::store_there(s)));
         // (a switch and a slider each, in ranges of their own: ids next to each other clash)
         let (id_on, id_amount) = (id::WORKER + 110 + i as u32, id::WORKER + 155 + i as u32);
         let mut on = (lent > 0) as i32;
@@ -245,7 +245,8 @@ fn set_lent(c: &mut Config, path: &str, bytes: u64) {
     } else if let Some(s) = c.stores.iter_mut().find(|s| config::same_path(&s.path, path)) {
         s.disk = bytes;
     } else if bytes > 0 {
-        c.stores.push(Store { path: String::from(path), disk: bytes });
+        // (a drive of the list is a mount point -- or the root of a drive letter)
+        c.stores.push(Store { path: String::from(path), disk: bytes, mount: config::mount_point(path) });
     }
 }
 
@@ -380,7 +381,7 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     ui.heading(2, TS_BODY_STRONG, t("Projekte auf diesem Gerät"));
     let total: u64 = g.projects.iter().map(|p| p.bytes).sum();
     // (what is lent on every drive that is there)
-    let lent = cfg.disk + cfg.stores.iter().filter(|s| g.demo || plat::file_exists(&s.path) == 2).map(|s| s.disk).sum::<u64>();
+    let lent = cfg.disk + cfg.stores.iter().filter(|s| g.demo || config::store_there(s)).map(|s| s.disk).sum::<u64>();
     ui.text(TS_CAPTION | TX_SECONDARY, &tf("{} von {} belegt", &[&size_text(total), &size_text(lent)]));
     let cleaning = g.clean_task.is_some();
     if g.projects.is_empty() || cleaning {
@@ -1045,7 +1046,7 @@ pub fn demo(g: &mut Gui) {
         cpu: 6,
         ram: 12 << 30,
         disk: 40 << 30,
-        stores: alloc::vec![Store { path: String::from("/media/laptop/Extern"), disk: 200 << 30 }],
+        stores: alloc::vec![Store { path: String::from("/media/laptop/Extern"), disk: 200 << 30, mount: true }],
         jobs: 4,
         priority: String::from("low"),
         keep_days: 14,

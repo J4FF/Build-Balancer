@@ -230,7 +230,7 @@ file lets several `bb` processes follow one job without reading events twice.
 A worker need not be online when a job is sent: the order waits in its inbox.
 
 A light job (`JobSpec::light`, `bb run --light`) holds no processors and is not one of the
-jobs at once: it starts as soon as it arrives, on all the lent processors at low priority,
+jobs at once: it starts as soon as it arrives, on all the lent processors at the jobs' priority,
 `LIGHT_AT_ONCE` (2) at a time and `LIGHT_SECS` (10 minutes) at most. One that brings files
 waits for its workspace like any job; one that does not shares it with the job that runs
 there. The main machine sends a light job with `cpu` 1, so a worker before 0.1.4, which does
@@ -243,8 +243,10 @@ script into the job's folder that goes to the job's folder in the workspace, set
 environment and starts the program with its output appended to `left-running.log`, and
 hands that script to `plat::process::launch`, which starts it outside the worker's process
 tree (Linux: adopted by init in a session of its own; Windows: outside the worker's job).
-The job ends at once; on Linux and macOS the script notes its process id first, and the job
-says it. The worker only does this when its owner allows it (`Config::leave_running`, told
+The job ends as soon as that is handed over; on Linux and macOS the script notes its process
+id first (exec keeps it for the program), and the job says it, with what the log holds after
+a moment and a half -- so a program that could not start says so. That the job is done
+means the start was handed over, not that the program runs: nothing tells the worker that. The worker only does this when its owner allows it (`Config::leave_running`, told
 to the main machine in `WorkerStatus::leave_running`), and the main machine refuses to send
 such a job to a worker that does not allow it or is older than 0.1.4.
 

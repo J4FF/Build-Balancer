@@ -423,13 +423,15 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, place: &Place, done:
     }
     let (worker_name, low_priority, may_leave) = {
         let c = w.cfg.lock();
-        // (a light job is a guest beside the others: always below them)
-        (c.name.clone(), c.priority != "normal" || spec.light, c.leave_running)
+        // (a light job at the priority the jobs have: below them it would wait behind every
+        // build on a busy machine, and it is the one that should be answered now)
+        (c.name.clone(), c.priority != "normal", c.leave_running)
     };
     // (the limit of the place as it was when the job started)
     let lent_disk = place.limit;
     let mut env: Vec<(String, Option<String>)> = Vec::new();
-    let cpus = format!("{}", r.cpu);
+    // (a light job holds no processor, but the build tools are told one: 0 is no number of jobs to them)
+    let cpus = format!("{}", r.cpu.max(1));
     for (k, v) in [
         ("BB_JOB_ID", spec.id.as_str()),
         ("BB_PROJECT", spec.project.as_str()),
@@ -555,9 +557,12 @@ fn execute(w: &Worker, r: &Running, em: &Emitter, jd: &str, place: &Place, done:
 /// what a worker says to a job that is to leave a program running where its owner does not allow it
 pub const LEAVE_REFUSED: &str = "this worker lets no program outlive its job: on it, `bb-worker config --leave-running yes` (or the switch in the app) allows that";
 
-/// `bb run --leave-running`: start the program on its own -- outside the worker's process
-/// tree, so the end of the job is not its end -- and end the job.  Its output goes to a file
-/// in the job's folder; on Linux and macOS its process id is told.
+/// `bb run --leave-running`: hand the program to the system to start on its own -- outside
+/// the worker's process tree, so the end of the job is not its end -- and end the job.  Its
+/// output goes to a file in the job's folder; on Linux and macOS its process id is told.  The
+/// job's result says that the start was handed over, not that the program runs: nothing
+/// tells the worker that.  What the log holds after a moment -- a program that could not
+/// start says so there -- goes into the job's output.
 #[allow(clippy::too_many_arguments)]
 fn leave_running(w: &Worker, spec: &JobSpec, jd: &str, allowed: bool, worker: &str, program: &str, args: &[String], cwd: &str, env: &[(String, Option<String>)], done: &mut Done) -> Result<(), String> {
     if !allowed {
@@ -581,17 +586,21 @@ fn leave_running(w: &Worker, spec: &JobSpec, jd: &str, allowed: bool, worker: &s
             pid = plat::read_file(&pid_path).map(|b| String::from(String::from_utf8_lossy(&b).trim())).unwrap_or_default();
         }
     }
+    // what it says at first: a program that could not start says it there
+    plat::sleep_ms(1500);
+    let first = plat::read_file(&log_path).map(|b| String::from_utf8_lossy(&b[..b.len().min(2048)]).into_owned()).unwrap_or_default();
     let mut log = LogBuf::new(jd, Emitter::new(w, &spec.main, &spec.id));
     let line = format!(
-        "started and left running on {}{}: {}\nits output goes to {} there; the worker does not hold, watch or end it\n",
+        "handed to the system to start and left running on {}{}: {}\nthe worker does not hold, watch or end it; whether it runs, and what it says, is in {} there{}\n",
         worker,
         if pid.is_empty() { String::new() } else { format!(" (process {})", pid) },
         spec.command_text(),
-        log_path
+        log_path,
+        if first.trim().is_empty() { String::new() } else { format!(" -- its first words:\n{}", first.trim_end()) }
     );
     log.push(false, line.as_bytes());
     log.finish();
-    plat::log_info("job", &format!("{} left running{}: {}", spec.id, if pid.is_empty() { String::new() } else { format!(" (process {})", pid) }, spec.command_text()));
+    plat::log_info("job", &format!("{} handed over to run on its own{}: {}", spec.id, if pid.is_empty() { String::new() } else { format!(" (process {})", pid) }, spec.command_text()));
     done.exit = 0;
     done.state = String::from(proto::ST_DONE);
     Ok(())

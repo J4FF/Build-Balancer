@@ -480,7 +480,7 @@ fn scheduler(w: &Arc<Worker>) {
         if t >= next_tidy {
             next_tidy = t + 3_600_000;
             let days = w.cfg.lock().keep_days;
-            cleanup::expire(&w.dir, days, &|p, s| w.remove_project(p, s));
+            cleanup::expire(&w.dir, days, &|r, p, s| w.remove_in(r, p, s));
             job::prune(&w.dir);
         }
         if t >= next_resend {
@@ -675,7 +675,8 @@ fn status(w: &Worker) -> WorkerStatus {
         offer: Offer { cpu: c.cpu, ram: c.ram, disk: lent_disk, jobs: c.jobs },
         cpu_reserved: s.running.iter().map(|r| r.cpu).sum(),
         ram_reserved: s.running.iter().map(|r| r.ram).sum(),
-        ram_used: s.running.iter().map(|r| r.ram.max(r.rss.load(Relaxed))).sum(),
+        // (a light job reserves nothing at admission, but what it asked for still counts as held)
+        ram_used: s.running.iter().map(|r| r.spec.ram.max(r.rss.load(Relaxed))).sum(),
         leave_running: c.leave_running,
         disk_used: workspaces.iter().map(|x| x.bytes).sum(),
         enforce_cpu: String::from(if s.cores.pinning() { "affinity" } else { "hint" }),

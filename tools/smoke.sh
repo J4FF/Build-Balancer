@@ -240,6 +240,8 @@ wait_for 30 in_state "$big" running >/dev/null || die "the long job did not get 
 "$bb" run -q --light --no-sync --sh "echo light" >"$work/light.out" 2>&1
 check "a light job runs at once beside a job that holds every processor" light "$(tr -d '\r ' <"$work/light.out")"
 check "... while that one still runs" running "$(state_of "$big")"
+if [ "$win" = 1 ]; then tools_jobs='echo %CARGO_BUILD_JOBS%'; else tools_jobs='echo $CARGO_BUILD_JOBS'; fi
+check "... and tells build tools one processor, not none" 1 "$("$bb" run -q --light --no-sync --sh "$tools_jobs" 2>/dev/null | tr -d ' ')"
 # a program a job starts and leaves running: only where the worker's owner allows it
 "$bb" run -q --leave-running --no-sync --sh "echo x" >"$work/leave.out" 2>&1
 check "a program is left running only where the worker's owner allows it" 1 "$(grep -c -- "--leave-running yes" "$work/leave.out")"
@@ -248,8 +250,8 @@ allowed() { "$bb" workers --json | grep -q '"leave_running": true' && echo yes; 
 wait_for 30 allowed >/dev/null || die "the worker did not say that it allows it" "$work/worker.out"
 if [ "$win" = 1 ]; then later="ping -n 4 127.0.0.1 >nul & echo alive> \"$work/alive.txt\""; else later="sleep 3; echo alive > '$work/alive.txt'"; fi
 "$bb" run -q --leave-running --no-sync --sh "$later" >"$work/leave.out" 2>&1
-check "bb run --leave-running ends as soon as the program has started" 0 $?
-check "... says so" 1 "$(grep -c "started and left running" "$work/leave.out")"
+check "bb run --leave-running ends as soon as the program is handed over" 0 $?
+check "... says so" 1 "$(grep -c "handed to the system to start and left running" "$work/leave.out")"
 check "... before the program is through" no "$([ -f "$work/alive.txt" ] && echo yes || echo no)"
 alive() { [ -f "$work/alive.txt" ] && echo yes; }
 check "... which goes on after the job's end" yes "$(wait_for 30 alive)"

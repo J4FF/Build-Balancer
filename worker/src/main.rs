@@ -394,11 +394,12 @@ fn leave_cmd(cli: &Cli, dir: &str) -> i32 {
         return fail("a worker runs on this data folder: stop it first (its service, its terminal, or the app)");
     }
     if cli.flag("--purge") {
-        return if cleanup::purge(dir) {
-            out("The pairing and every file of this worker are gone.  On the main machine, `bb unpair NAME` removes it from the relay.\n");
-            0
-        } else {
-            fail(&format!("not everything in {} could be removed (a file is open in another program)", dir))
+        return match cleanup::purge(dir) {
+            Ok(()) => {
+                out("The pairing and every file of this worker are gone.  On the main machine, `bb unpair NAME` removes it from the relay.\n");
+                0
+            }
+            Err(e) => fail(&e),
         };
     }
     if plat::delete(&plat::fs::join(dir, "worker.json")) {

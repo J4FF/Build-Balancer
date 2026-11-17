@@ -5,7 +5,7 @@
 //                                        of its finished jobs -> bytes freed
 //   remove_idle(dir, project, slot)      the same when no worker runs on the data folder
 //   remove_all(dir, remove)              every project, each through `remove`
-//   expire(dir, days, remove)            workspaces nobody used for `days` days go by themselves
+//   expire(dir, days, remove)            copies nobody used for `days` days go by themselves
 //                                        (the worker's setting keep_days)
 //   give_up(dir, config, remove)         a place the worker is to keep nothing in any more (a
 //                                        drive switched off, or the data folder with --disk 0):
@@ -152,8 +152,10 @@ pub fn remove_all(dir: &str, remove: Remove) -> (usize, u64, usize) {
     (gone, bytes, kept)
 }
 
-/// remove the workspaces nobody used for `days` days (0: never) -> how many went
-pub fn expire(dir: &str, days: u32, remove: Remove) -> usize {
+/// Remove the copies nobody used for `days` days (0: never) -> how many went.  Each copy on
+/// its own: a project's slot can lie in two places (a drive that came back after the project
+/// was sent elsewhere), and the newer copy stays.
+pub fn expire(dir: &str, days: u32, remove: RemoveIn) -> usize {
     if days == 0 {
         return 0;
     }
@@ -162,7 +164,7 @@ pub fn expire(dir: &str, days: u32, remove: Remove) -> usize {
     for (root, w) in config::located(dir) {
         // a workspace without a record (a first sync that never finished): its folder's time
         let used = if w.used > 0 { w.used } else { plat::fs::stat(&config::ws_dir(&root, &w.project_id, &w.slot)).map_or(now(), |m| m.mtime_ns.div_euclid(1_000_000_000)) };
-        if used < limit && remove(&w.project_id, &w.slot).is_ok() {
+        if used < limit && remove(&root, &w.project_id, &w.slot).is_ok() {
             plat::log_info("cleanup", &format!("workspace {} / {} removed: unused for more than {} days", if w.project.is_empty() { &w.project_id } else { &w.project }, w.slot, days));
             gone += 1;
         }
@@ -184,7 +186,7 @@ pub fn give_up(dir: &str, c: &config::Config, remove: RemoveIn) -> bool {
         }
         clear &= config::workspaces_in(dir).is_empty();
     }
-    for s in c.stores.iter().filter(|s| s.disk == 0 && plat::file_exists(&s.path) == 2) {
+    for s in c.stores.iter().filter(|s| s.disk == 0 && config::store_there(s)) {
         let root = config::store_root(&s.path, &c.id);
         if plat::file_exists(&root) == 0 {
             continue;
@@ -208,7 +210,7 @@ pub fn give_up(dir: &str, c: &config::Config, remove: RemoveIn) -> bool {
 /// is not there keeps its entry: what lies on it goes when it is plugged in again.
 pub fn forget_given_up(c: &mut config::Config) {
     let id = c.id.clone();
-    c.stores.retain(|s| s.disk > 0 || plat::file_exists(&s.path) != 2 || plat::file_exists(&config::store_root(&s.path, &id)) != 0);
+    c.stores.retain(|s| s.disk > 0 || !config::store_there(s) || plat::file_exists(&config::store_root(&s.path, &id)) != 0);
 }
 
 /// leave a request for the worker that runs on this data folder -> the request's file
@@ -229,22 +231,47 @@ pub fn take_requests(dir: &str, f: &mut dyn FnMut(&str, &str)) {
     }
 }
 
-/// forget the pairing and remove everything this program keeps here
-pub fn purge(dir: &str) -> bool {
-    let mut ok = true;
+/// Forget the pairing and remove everything this program keeps here and on the drives it
+/// keeps projects on.  A drive that lends and is not there stops it before anything goes:
+/// afterwards nothing would know of what lies on it.  -> Err(what stays, and why)
+pub fn purge(dir: &str) -> Result<(), String> {
+    let c = config::load(dir);
+    if let Some(c) = &c {
+        let away: Vec<&str> = c.stores.iter().filter(|s| s.disk > 0 && !config::store_there(s)).map(|s| s.path.as_str()).collect();
+        if !away.is_empty() {
+            return Err(format!(
+                "projects of this worker lie on {}, which is not there: plug it in -- or give it up with `bb-worker config --store DRIVE=off` (what lies on it then stays there) -- and remove everything again",
+                away.join(", ")
+            ));
+        }
+    }
+    let mut left: Vec<String> = Vec::new();
     // what lies on other drives first: afterwards nothing here knows of them any more
-    if let Some(c) = config::load(dir) {
-        for s in c.stores.iter().filter(|s| plat::file_exists(&s.path) == 2) {
-            ok &= remove_tree(&config::store_root(&s.path, &c.id));
-            plat::delete(&plat::fs::join(&s.path, "BuildBalancer"));
+    if let Some(c) = &c {
+        for s in c.stores.iter().filter(|s| config::store_there(s)) {
+            let root = config::store_root(&s.path, &c.id);
+            if remove_tree(&root) {
+                plat::delete(&plat::fs::join(&s.path, "BuildBalancer"));
+            } else {
+                left.push(root);
+            }
         }
     }
     for part in ["ws", "jobs", "requests", "logs"] {
-        ok &= remove_tree(&plat::fs::join(dir, part));
+        let p = plat::fs::join(dir, part);
+        if !remove_tree(&p) {
+            left.push(p);
+        }
+    }
+    if !left.is_empty() {
+        // (the pairing stays: it names the drives, and a second try finds what is left)
+        return Err(format!("not everything could be removed (a file is open in another program): {}", left.join(", ")));
     }
     for file in ["worker.json", "state.json", "worker.lock"] {
         let p = plat::fs::join(dir, file);
-        ok &= plat::file_exists(&p) == 0 || plat::delete(&p);
+        if plat::file_exists(&p) != 0 && !plat::delete(&p) {
+            left.push(p);
+        }
     }
-    ok
+    if left.is_empty() { Ok(()) } else { Err(format!("{} could not be removed", left.join(", "))) }
 }

@@ -64,17 +64,34 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
         return Err(String::from("the slot's name needs letters or digits"));
     }
     let light = req.light || req.leave_running;
+    // what a worker said of itself last: a program is left running only where its owner
+    // allows it, and only a worker from 0.1.4 on knows how
+    let cannot_leave = |v: &WorkerView| match &v.status {
+        Some(s) if bb_update::newer("0.1.4", &s.version) => Some(format!("{} runs version {}, which cannot leave a program running: bring it up to date first (bb update -w {})", v.paired.name, s.version, v.paired.name)),
+        Some(s) if !s.leave_running => Some(format!("{} lets no program outlive its job: on that machine, `bb-worker config --leave-running yes` (or the switch in the app) allows it", v.paired.name)),
+        _ => None,
+    };
+    let auto = req.worker.is_empty() || req.worker == "auto";
     let (worker, key) = {
-        let v = fleet::pick(views, &req.worker, &needs, req.cpu, req.ram)?;
-        // what the worker said of itself last: a program is left running only where its owner
-        // allows it, and only a worker from 0.1.4 on knows either kind of job
+        // (chosen by itself: among the workers that can -- a named one says why it cannot)
+        let able: Vec<WorkerView>;
+        let pool: &[WorkerView] = if req.leave_running && auto {
+            able = views.iter().filter(|v| cannot_leave(v).is_none()).cloned().collect();
+            if able.is_empty() {
+                let why: Vec<String> = views.iter().filter_map(cannot_leave).collect();
+                return Err(format!("no worker can leave a program running: {}", if why.is_empty() { String::from("none has said what it allows yet") } else { why.join("; ") }));
+            }
+            &able
+        } else {
+            views
+        };
+        let v = fleet::pick(pool, &req.worker, &needs, req.cpu, req.ram)?;
         if let Some(s) = &v.status {
             let old = bb_update::newer("0.1.4", &s.version);
-            if req.leave_running && old {
-                return Err(format!("{} runs version {}, which cannot leave a program running: bring it up to date first (bb update -w {})", v.paired.name, s.version, v.paired.name));
-            }
-            if req.leave_running && !s.leave_running {
-                return Err(format!("{} lets no program outlive its job: on that machine, `bb-worker config --leave-running yes` (or the switch in the app) allows it", v.paired.name));
+            if req.leave_running
+                && let Some(why) = cannot_leave(v)
+            {
+                return Err(why);
             }
             if light && old {
                 say(&format!("note: {} runs version {}: it runs this light job as an ordinary one of one processor", v.paired.name, s.version));

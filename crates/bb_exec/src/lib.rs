@@ -94,8 +94,8 @@ impl Cores {
 }
 
 /// A script that starts a program on its own, in `cwd`, with `env` (the worker's environment
-/// plus these), its output appended to `log`; on Linux and macOS it notes its process id in
-/// `pid` first.  -> (the interpreter, its arguments before the script, the script, the
+/// plus these), its output -- and what goes wrong on the way to it -- appended to `log`; on
+/// Linux and macOS it notes its process id in `pid` first (the program keeps it).  -> (the interpreter, its arguments before the script, the script, the
 /// script's extension).  For plat::process::launch, which starts a program outside the
 /// worker's process tree but has no folder, environment or output of its own.
 pub fn launcher(program: &str, args: &[String], cwd: &str, env: &[(String, Option<String>)], log: &str, pid: &str) -> Result<(String, Vec<String>, String, &'static str), String> {
@@ -108,20 +108,29 @@ pub fn launcher(program: &str, args: &[String], cwd: &str, env: &[(String, Optio
             return Err(String::from("a quote or a line break cannot be handed to a program that is left running on Windows: put the command into a script (--sh)"));
         }
         let q = |t: &str| format!("\"{}\"", t.replace('%', "%%"));
-        let mut text = format!("@echo off\r\ncd /d {} || exit /b 1\r\n", q(cwd));
+        // An argument as a program reads its command line: backslashes before the closing
+        // quote are doubled, or the last one would make the quote a part of the argument.
+        let arg = |t: &str| {
+            let tail = t.len() - t.trim_end_matches('\\').len();
+            format!("\"{}{}\"", t.replace('%', "%%"), "\\".repeat(tail))
+        };
+        // (what goes wrong before the program starts lands in the log as well)
+        let mut text = format!("@echo off\r\ncd /d {} 2>> {} || exit /b 1\r\n", q(cwd), q(log));
         for (k, v) in &set {
             text += &format!("set {}\r\n", q(&format!("{}={}", k, v)));
         }
         text += &q(program);
         for a in args {
             text.push(' ');
-            text += &q(a);
+            text += &arg(a);
         }
         text += &format!(" >> {} 2>&1\r\n", q(log));
         return Ok((String::from("cmd.exe"), alloc::vec![String::from("/d"), String::from("/c")], text, "cmd"));
     }
     let q = |t: &str| format!("'{}'", t.replace('\'', "'\\''"));
-    let mut text = format!("#!/bin/sh\necho $$ > {}\ncd {} || exit 1\nexec env", q(pid), q(cwd));
+    // (from the second line on everything goes to the log: also a folder that is not there,
+    // or a program the system cannot start)
+    let mut text = format!("#!/bin/sh\necho $$ > {}\nexec >> {} 2>&1 < /dev/null\ncd {} || exit 1\nexec env", q(pid), q(log), q(cwd));
     for (k, v) in &set {
         text.push(' ');
         text += &q(&format!("{}={}", k, v));
@@ -132,7 +141,7 @@ pub fn launcher(program: &str, args: &[String], cwd: &str, env: &[(String, Optio
         text.push(' ');
         text += &q(a);
     }
-    text += &format!(" >> {} 2>&1 < /dev/null\n", q(log));
+    text.push('\n');
     Ok((String::from("/bin/sh"), Vec::new(), text, "sh"))
 }
 

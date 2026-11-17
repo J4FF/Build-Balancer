@@ -31,6 +31,9 @@ record! {
         pub path: String,
         /// bytes lent there; 0: given up -- nothing new goes there, what lies there is removed
         pub disk: u64,
+        /// a drive was mounted at `path` when it was named: it counts only while one is (a
+        /// mount point left behind is an empty folder on another drive)
+        pub mount: bool,
     }
 }
 
@@ -188,7 +191,7 @@ pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, Strin
         let n = bb_core::util::share_parse(amount.trim(), free, bb_core::util::size_parse).ok_or(usage)?.max(256 << 20);
         match known {
             Some(i) => c.stores[i].disk = n,
-            None => c.stores.push(Store { path, disk: n }),
+            None => c.stores.push(Store { mount: mount_point(&path), path, disk: n }),
         }
     }
     if c.disk == 0 && !c.stores.iter().any(|s| s.disk > 0) {
@@ -236,7 +239,7 @@ pub fn offer_text(c: &Config) -> String {
     for s in c.stores.iter().filter(|s| s.disk > 0 || plat::file_exists(&store_root(&s.path, &c.id)) != 0) {
         let state = if s.disk == 0 {
             "given up: what lies there is removed"
-        } else if plat::file_exists(&s.path) != 2 {
+        } else if !store_there(s) {
             "not there right now"
         } else {
             ""
@@ -278,6 +281,25 @@ pub fn same_path(a: &str, b: &str) -> bool {
     if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b }
 }
 
+/// Whether a drive is mounted at this folder: a drive's root ("E:/", "/"), or a folder on
+/// another device than the folder above it (Linux, macOS).
+pub fn mount_point(path: &str) -> bool {
+    let up = plat::fs::parent(path);
+    if up.is_empty() || up == path {
+        return true;
+    }
+    match (plat::fs::stat(path), plat::fs::stat(up)) {
+        (Some(a), Some(b)) => a.dev != b.dev,
+        _ => false,
+    }
+}
+
+/// Whether a drive (or folder) projects are kept on is there right now: plugged in, and --
+/// where a drive was mounted at it -- mounted, not only its empty mount point.
+pub fn store_there(s: &Store) -> bool {
+    plat::file_exists(&s.path) == 2 && (!s.mount || mount_point(&s.path))
+}
+
 /// a place projects are kept in: the data folder, or a worker's folder on another drive
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Place {
@@ -299,7 +321,7 @@ pub fn store_root(path: &str, worker_id: &str) -> String {
 /// still to be removed.
 pub fn places(dir: &str, c: &Config) -> Vec<Place> {
     let mut out = alloc::vec![Place { path: String::new(), root: String::from(dir), limit: c.disk }];
-    out.extend(c.stores.iter().filter(|s| plat::file_exists(&s.path) == 2).map(|s| Place { path: s.path.clone(), root: store_root(&s.path, &c.id), limit: s.disk }));
+    out.extend(c.stores.iter().filter(|s| store_there(s)).map(|s| Place { path: s.path.clone(), root: store_root(&s.path, &c.id), limit: s.disk }));
     out
 }
 

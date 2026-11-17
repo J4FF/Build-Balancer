@@ -17,6 +17,7 @@ use bb_core::util::size_text;
 
 use crate::conf::{Ctx, PairedWorker};
 
+#[derive(Clone)]
 pub struct WorkerView {
     pub paired: PairedWorker,
     /// the relay still admits it (false: removed there, or of another relay)

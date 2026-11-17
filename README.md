@@ -268,8 +268,8 @@ The important options of `bb run`:
 | `--slot NAME` | a separate copy of the project on the worker, so jobs can run side by side |
 | `-d` | do not wait; `bb wait JOB`, `bb logs -f JOB` follow later |
 | `--no-sync`, `--no-fetch`, `--to DIR` | skip sending files / leave outputs at the relay / write them elsewhere |
-| `--light` | holds no processors and starts at once, beside the jobs that hold them: for what needs almost nothing and should be answered now (a screenshot, `pgrep`, a look at a log). Two at a time per worker, 10 minutes at most. |
-| `--leave-running` | start the program and leave it running on the worker (an app with a window, a server): the job ends as soon as it has started |
+| `--light` | holds no processors and starts at once, beside the jobs that hold them: for what needs almost nothing and should be answered now (a screenshot, `pgrep`, a look at a log). Two at a time per worker, 10 minutes at most; the memory it takes counts, but none is set aside for it. |
+| `--leave-running` | start the program and leave it running on the worker (an app with a window, a server): the job ends as soon as the start is handed to the system |
 | `--json` | one JSON document instead of text (on every command) |
 
 `bb run` exits with the command's own exit code (130 cancelled, 137 ended by a limit, 1 when
@@ -277,8 +277,10 @@ it could not run).
 
 **What a job starts ends with it** -- also what it starts with `nohup` or `&`: the worker ends
 the job's whole process tree, so nothing is left behind. `--leave-running` is the way to start
-something that is to go on: the worker starts it on its own, says its process id (Linux,
-macOS), sends its output to a file there, and neither counts, watches nor ends it. A worker
+something that is to go on: the worker hands it to the system to start on its own, says its
+process id (Linux, macOS), and sends its output to a file there -- the job's output shows
+what the program said in its first moment, so one that could not start says so; the worker
+neither counts, watches nor ends it. A worker
 allows that only when its owner says so, with `bb-worker config --leave-running yes` or the
 switch on the app's page **This machine**. A program with a window needs a worker that runs in
 the user's session: the app, or `bb-worker run` in a terminal -- not the service.

@@ -62,6 +62,8 @@ pub struct Gui {
     upd_retry_at: u64,
     /// this window could not start itself again (it said so, and does not try over and over)
     restart_failed: bool,
+    /// a drive was switched off while a removal ran: emptied once that is through
+    give_up_pending: bool,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -141,6 +143,7 @@ impl Gui {
             upd_waiting: false,
             upd_ordered: false,
             restart_failed: false,
+            give_up_pending: false,
             upd_tries: 0,
             upd_retry_at: 0,
             nav: NavState::default(),
@@ -371,11 +374,22 @@ impl Gui {
             ui.toast(IB_ERROR, t("Nicht gespeichert"), &e, 0);
             return;
         }
-        // A drive that was switched off: a running worker empties it (it knows where a job is
-        // at work); without one it is emptied right here.
-        let c = c.clone();
+        self.give_up(ui);
+    }
+
+    /// A drive that was switched off: a running worker empties it (it knows where a job is at
+    /// work); without one it is emptied here -- once a removal that runs is through.
+    fn give_up(&mut self, ui: &mut Ui) {
+        let Some(c) = self.wcfg.clone() else { return };
         let given_up = (c.disk == 0 && !config::workspaces_in(&self.worker_dir).is_empty()) || c.stores.iter().any(|s| s.disk == 0 && plat::file_exists(&config::store_root(&s.path, &c.id)) != 0);
-        if self.engine.is_none() && self.clean_task.is_none() && given_up {
+        if self.engine.is_some() || !given_up {
+            return;
+        }
+        if self.clean_task.is_some() {
+            self.give_up_pending = true;
+            return;
+        }
+        {
             let dir = self.worker_dir.clone();
             self.clean_task = Some(ui.spawn(spawn_blocking(move || {
                 let _lock = plat::FileLock::acquire(&plat::fs::join(&dir, "worker.lock")).ok_or_else(|| String::from(t("Ein anderer Worker arbeitet auf diesem Datenordner: er leert das Laufwerk.")))?;
@@ -420,8 +434,12 @@ impl Gui {
     /// forget the pairing and remove everything this machine kept for it
     pub fn leave(&mut self, ui: &mut Ui) {
         self.set_lending(false);
-        if !self.demo && !cleanup::purge(&self.worker_dir) {
-            ui.toast(IB_WARNING, t("Nicht alles entfernt"), t("Eine Datei ist noch in einem anderen Programm geöffnet."), 0);
+        if !self.demo
+            && let Err(e) = cleanup::purge(&self.worker_dir)
+        {
+            // (the pairing stays: what is left is found again by a second try)
+            ui.toast(IB_WARNING, t("Nicht alles entfernt"), &e, 0);
+            return;
         }
         self.wcfg = None;
         self.projects.clear();
@@ -774,6 +792,9 @@ impl Gui {
             };
             self.projects = cleanup::projects(&self.worker_dir);
             self.refresh_drives();
+            if core::mem::take(&mut self.give_up_pending) {
+                self.give_up(ui);
+            }
         }
         if let Some(r) = done(&mut self.fleet_task) {
             self.fleet_loaded = true;
