@@ -91,6 +91,10 @@ pub struct Worker {
     /// (on disk, too), so they run after the restart instead of being cut off by it.
     pub hold: AtomicBool,
     pub online: AtomicBool,
+    /// the relay no longer admits this worker (401): unpaired, or paired anew elsewhere
+    pub unpaired: AtomicBool,
+    /// why the last talk with the relay failed ("" while it works)
+    pub relay_error: Mutex<String>,
     meter: Mutex<CpuMeter>,
 }
 
@@ -212,6 +216,9 @@ pub fn update_programs(say: &mut dyn FnMut(&str)) -> Result<Option<String>, Stri
 }
 
 pub fn not_paired(dir: &str) -> String {
+    if let Some(why) = bb_core::util::unreadable(&plat::fs::join(dir, "worker.json")) {
+        return why;
+    }
     // a pairing made as root and looked for as the person behind sudo, or the other way round,
     // must not look like no pairing at all
     if let Some(other) = config::other_place(dir) {
@@ -271,6 +278,8 @@ impl Engine {
             restart: AtomicU8::new(0),
             hold: AtomicBool::new(false),
             online: AtomicBool::new(false),
+            unpaired: AtomicBool::new(false),
+            relay_error: Mutex::new(String::new()),
             meter: Mutex::new(CpuMeter::default()),
         });
         if !w.sched.lock().cores.pinning() {
@@ -298,6 +307,16 @@ impl Engine {
 
     pub fn online(&self) -> bool {
         self.w.online.load(Relaxed)
+    }
+
+    /// the relay no longer admits this worker: it has to be paired anew
+    pub fn unpaired(&self) -> bool {
+        self.w.unpaired.load(Relaxed)
+    }
+
+    /// why the relay could not be talked to the last time ("" while it can)
+    pub fn relay_error(&self) -> String {
+        self.w.relay_error.lock().clone()
     }
 
     /// whether no job runs or waits here
@@ -496,7 +515,12 @@ fn scheduler(w: &Arc<Worker>) {
             let ok = send_status(w);
             w.online.store(ok, Relaxed);
             if online != Some(ok) {
-                plat::log_info("worker", if ok { "connected to the relay" } else { "the relay is not reachable; trying again" });
+                // (one that no longer admits this worker said so in send_status)
+                if ok {
+                    plat::log_info("worker", "connected to the relay");
+                } else if !w.unpaired.load(Relaxed) {
+                    plat::log_info("worker", &format!("the relay is not reachable ({}); trying again", w.relay_error.lock().as_str()));
+                }
                 online = Some(ok);
             }
         }
@@ -695,10 +719,16 @@ fn send_status(w: &Worker) -> bool {
     let st = status(w);
     let sealed = crypt::seal(&w.pair, &crypt::aad(&st.id, "status"), j::text(&st.to_json()).as_bytes());
     match w.relay.status_put(&sealed) {
-        Ok(()) => true,
+        Ok(()) => {
+            w.unpaired.store(false, Relaxed);
+            w.relay_error.lock().clear();
+            true
+        }
         Err(e) => {
-            if e.status == 401 {
-                plat::log_error("worker", "the relay no longer admits this worker (it was unpaired on the main machine); pair it again");
+            *w.relay_error.lock() = format!("{}", e);
+            // said once, not every ten seconds
+            if e.status == 401 && !w.unpaired.swap(true, Relaxed) {
+                plat::log_error("worker", "the relay no longer admits this worker: it was removed on the main machine, or this machine was paired anew elsewhere.  Pair it again (bb-worker join RELAY CODE --force, or the app)");
             }
             false
         }

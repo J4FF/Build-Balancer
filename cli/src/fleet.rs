@@ -288,7 +288,7 @@ pub fn hint(v: &WorkerView) -> Option<String> {
         return None;
     }
     Some(if v.idle_secs < 0 {
-        format!("paired, but it never came online.  Nothing runs there yet: start `bb-worker run` on {host} (or the app, or `sudo bb-worker service install` to have it start with the machine)")
+        format!("paired, but it never came online.  Nothing runs there yet: start `bb-worker run` on {host} (or the app, or `sudo bb-worker service install` to have it start with the machine).  Was the machine paired anew since?  Then this entry is left over: bb unpair {name}", name = v.paired.name)
     } else {
         format!("offline for {}.  Is {host} switched on, and does bb-worker run there (`bb-worker service status`, or the app)?", bb_core::util::dur_text(v.idle_secs as u64 * 1000))
     })

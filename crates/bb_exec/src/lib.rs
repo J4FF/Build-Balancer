@@ -17,7 +17,7 @@ pub mod svc;
 pub mod sys;
 pub mod tools;
 
-pub use run::{resolve, script, spawn, Proc, Spec};
+pub use run::{launch, resolve, script, spawn, Proc, Spec};
 
 use alloc::format;
 use alloc::string::String;

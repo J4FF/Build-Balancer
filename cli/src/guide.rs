@@ -51,7 +51,8 @@ Outputs.
   Patterns are relative to the project's root: a file, a folder (everything below it) or a
   glob (* within a name, ** across folders).  They come back to the same paths here, also
   when the command failed.  Without --out nothing comes back but the log.
-  --no-fetch leaves them at the relay; bb fetch JOB [--to DIR] gets them later.
+  --no-fetch leaves them at the relay; bb fetch JOB [--to DIR] gets them later.  A job sent
+  with -d keeps both: bb wait (and the MCP tools) fetch its outputs as bb run was told.
 
 What is sent.  Every file of the project except what .gitignore and .bbignore (same syntax)
 leave out; .git itself is left out.  So generated files that the build needs but git ignores

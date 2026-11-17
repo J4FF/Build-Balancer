@@ -100,7 +100,9 @@ and a code that works once, for 30 minutes:
 
 - **The other PC has nothing yet:** click **Copy for Linux and macOS** (or **Copy for
   Windows**) and paste the line into a terminal there. It fetches Build Balancer, pairs the
-  machine and starts lending right away.
+  machine and starts lending right away -- on Windows by opening the app, whose page **This
+  machine** sets how much the PC lends. Use a normal terminal, not one started "as
+  administrator": what Build Balancer writes there belongs to the administrators.
 - **Build Balancer is there already:** open **BuildBalancer** on it, choose **This machine
   lends power**, enter the address and the code, and click **Pair** -- or run the line
   `bb-worker join ...` in a terminal.
@@ -109,10 +111,14 @@ and a code that works once, for 30 minutes:
 
 That is all. The machine shows up under **Machines** and stays paired; do the same on every
 PC that should help. A machine that was paired but shows as "never online" has nothing
-running yet: `bb workers` says what to start.
+running yet: `bb workers` says what to start (or, if the machine was paired anew since, that
+the entry is left over). A worker that the main machine removed says so in the app ("no
+longer paired", with a button to pair again) and once in its log.
 
 A machine lends power while the app's window is open or `bb-worker join` / `bb-worker run`
-runs in a terminal. To lend whenever the machine is switched on:
+runs in a terminal -- one of them at a time: when a worker runs in a terminal or as a
+service, the app says so, its settings apply to that worker, and the app takes over by
+itself once that one ends. To lend whenever the machine is switched on:
 
 ```sh
 sudo bb-worker service install      # Linux, macOS;  Windows: in a terminal run as administrator
@@ -267,7 +273,7 @@ The important options of `bb run`:
 | `--env NAME=VALUE`, `--cwd DIR`, `--timeout 30m` | |
 | `--slot NAME` | a separate copy of the project on the worker, so jobs can run side by side |
 | `-d` | do not wait; `bb wait JOB`, `bb logs -f JOB` follow later |
-| `--no-sync`, `--no-fetch`, `--to DIR` | skip sending files / leave outputs at the relay / write them elsewhere |
+| `--no-sync`, `--no-fetch`, `--to DIR` | skip sending files / leave outputs at the relay / write them elsewhere (a job sent with `-d` keeps the last two for `bb wait`) |
 | `--light` | holds no processors and starts at once, beside the jobs that hold them: for what needs almost nothing and should be answered now (a screenshot, `pgrep`, a look at a log). Two at a time per worker, 10 minutes at most; the memory it takes counts, but none is set aside for it. |
 | `--leave-running` | start the program and leave it running on the worker (an app with a window, a server): the job ends as soon as the start is handed to the system |
 | `--json` | one JSON document instead of text (on every command) |

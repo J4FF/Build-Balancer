@@ -322,3 +322,49 @@ impl Cli {
         Ok(())
     }
 }
+
+/// Windows, run as administrator: a file or folder that only its owner may open is owned by
+/// "the administrators" then -- and the same person in a window without administrator rights
+/// can no longer read their own settings.  So what such a run writes is given to that person,
+/// too (`icacls PATH /grant DOMAIN\\USER:F`).  Nothing happens elsewhere, without
+/// administrator rights, or for a service's account (it writes for itself).
+pub fn share_with_user(path: &str) {
+    if !cfg!(windows) || !plat::process::elevated() {
+        return;
+    }
+    let Some(user) = plat::env("USERNAME").filter(|u| !u.is_empty() && !u.ends_with('$') && !u.eq_ignore_ascii_case("SYSTEM")) else { return };
+    let who = match plat::env("USERDOMAIN").filter(|d| !d.is_empty()) {
+        Some(d) => format!("{}\\{}", d, user),
+        None => user,
+    };
+    let grant = if plat::file_exists(path) == 2 { format!("{}:(OI)(CI)F", who) } else { format!("{}:F", who) };
+    let args = [path, "/grant", grant.as_str(), "/Q"];
+    let cmd = plat::process::Command { program: "icacls", args: &args, cwd: None, env: &[] };
+    let Ok(mut child) = cmd.spawn() else { return };
+    child.close_stdin();
+    let end = tick_ms() + 10_000;
+    while tick_ms() < end {
+        if child.try_wait().map_or(true, |c| c.is_some()) {
+            return;
+        }
+        plat::sleep_ms(20);
+    }
+}
+
+/// Whether a file that should be there cannot be read: it is there (or whether it is cannot be
+/// told) and does not open.  -> what to say about it, with the way out
+pub fn unreadable(path: &str) -> Option<String> {
+    let there = plat::file_exists_checked(path);
+    if there == Some(0) || (there.is_some() && plat::read_file(path).is_some()) {
+        return None;
+    }
+    let dir = plat::fs::parent(path);
+    Some(if cfg!(windows) {
+        format!(
+            "{} cannot be read.  On Windows that happens after a Build Balancer program ran as administrator: in a terminal started with \"Run as administrator\",  icacls \"{}\" /reset /T /C  gives the files back (then run the programs without administrator rights)",
+            path, dir
+        )
+    } else {
+        format!("{} cannot be read by this user (was it written with sudo?  sudo chown -R $USER \"{}\" gives it back)", path, dir)
+    })
+}

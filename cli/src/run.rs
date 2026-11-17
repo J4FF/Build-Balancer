@@ -163,8 +163,11 @@ fn finish(ctx: &Ctx, mut recs: Vec<JobRec>, cli: &Cli, json: bool, deadline: Opt
     let mut code = 0;
     for rec in recs.iter_mut() {
         let mut files = Vec::new();
-        if proto::is_final(&rec.state) && !rec.artifacts.is_empty() && !cli.flag("--no-fetch") {
-            match jobs::fetch(ctx, rec, cli.value("--to")) {
+        // what this command says, else what the job was sent with (bb run -d --no-fetch / --to)
+        let no_fetch = cli.flag("--no-fetch") || rec.no_fetch;
+        let to = cli.value("--to").map(String::from).or_else(|| (!rec.fetch_to.is_empty()).then(|| rec.fetch_to.clone()));
+        if proto::is_final(&rec.state) && !rec.artifacts.is_empty() && !no_fetch {
+            match jobs::fetch(ctx, rec, to.as_deref()) {
                 Ok(f) => files = f,
                 Err(e) => {
                     rec.error = if rec.error.is_empty() { format!("the outputs could not be fetched: {}", e) } else { format!("{}; the outputs could not be fetched: {}", rec.error, e) };
@@ -196,6 +199,19 @@ fn detached(ctx: &Ctx, recs: &[JobRec]) -> Reply {
     let docs: Vec<Value> = recs.iter().map(|r| jobs::job_json(ctx, r, 0)).collect();
     let json = if docs.len() == 1 { docs.into_iter().next().unwrap_or(Value::Null) } else { j::obj([("ok", Value::Bool(true)), ("jobs", Value::Array(docs))]) };
     Reply::ok(text, json)
+}
+
+/// Keep in a job's record what `bb run` / `bb task` said of its outputs, so that `bb wait`
+/// and the MCP tools do the same later: --no-fetch, --to DIR (as an absolute path: the later
+/// command may run elsewhere).
+fn remember_fetch(ctx: &Ctx, rec: &mut JobRec, cli: &Cli) {
+    let (no_fetch, to) = (cli.flag("--no-fetch"), cli.value("--to"));
+    if !no_fetch && to.is_none() {
+        return;
+    }
+    rec.no_fetch = no_fetch;
+    rec.fetch_to = to.map(bb_core::util::abs_path).unwrap_or_default();
+    ctx.save_job(rec);
 }
 
 /// Whether `bb run`'s own options ask for JSON.  What follows the first word of the command
@@ -235,11 +251,12 @@ pub fn run(args: &[String], json: bool) -> CmdResult {
         }
     let quiet = json || cli.flag("--quiet");
     let mut views = fleet::fleet(&ctx)?;
-    let rec = jobs::submit(&ctx, project.as_ref(), &req, &mut views, &mut |m| {
+    let mut rec = jobs::submit(&ctx, project.as_ref(), &req, &mut views, &mut |m| {
         if !quiet {
             say(m)
         }
     })?;
+    remember_fetch(&ctx, &mut rec, &cli);
     if cli.flag("--detach") {
         return Ok(detached(&ctx, &[rec]));
     }
@@ -269,6 +286,8 @@ pub fn task(args: &[String], json: bool) -> CmdResult {
         if !quiet {
             say(&format!("task {} -> {} as {}", t.name, rec.worker, rec.id));
         }
+        let mut rec = rec;
+        remember_fetch(&ctx, &mut rec, &cli);
         recs.push(rec);
     }
     if cli.flag("--detach") {

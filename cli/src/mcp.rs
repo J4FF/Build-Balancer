@@ -180,8 +180,10 @@ fn settle(ctx: &Ctx, rec: &mut JobRec, secs: u64, tail: usize) -> Result<Value, 
     }
     let mut files = Vec::new();
     let mut fetch_error = String::new();
-    if proto::is_final(&rec.state) && !rec.artifacts.is_empty() && rec.fetched_to.is_empty() {
-        match jobs::fetch(ctx, rec, None) {
+    // (as bb run -d --no-fetch / --to sent it)
+    let to = (!rec.fetch_to.is_empty()).then(|| rec.fetch_to.clone());
+    if proto::is_final(&rec.state) && !rec.artifacts.is_empty() && rec.fetched_to.is_empty() && !rec.no_fetch {
+        match jobs::fetch(ctx, rec, to.as_deref()) {
             Ok(f) => files = f,
             Err(e) => fetch_error = e,
         }

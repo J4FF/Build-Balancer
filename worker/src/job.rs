@@ -576,7 +576,7 @@ fn leave_running(w: &Worker, spec: &JobSpec, jd: &str, allowed: bool, worker: &s
     }
     shell_args.push(script);
     let refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
-    plat::process::launch(&shell, &refs).map_err(|code| format!("{}: could not be started (system error {})", program, code))?;
+    bb_exec::launch(&shell, &refs).map_err(|code| format!("{}: could not be started (system error {})", program, code))?;
     // its process id, as the script notes it before it becomes the program
     let mut pid = String::new();
     if !cfg!(windows) {

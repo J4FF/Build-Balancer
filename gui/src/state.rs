@@ -64,6 +64,9 @@ pub struct Gui {
     restart_failed: bool,
     /// a drive was switched off while a removal ran: emptied once that is through
     give_up_pending: bool,
+    /// another worker holds this machine's data folder (the install line's window, bb-worker
+    /// run, the service): the app takes over as soon as it is gone
+    pub engine_busy: bool,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -144,6 +147,7 @@ impl Gui {
             upd_ordered: false,
             restart_failed: false,
             give_up_pending: false,
+            engine_busy: false,
             upd_tries: 0,
             upd_retry_at: 0,
             nav: NavState::default(),
@@ -324,6 +328,7 @@ impl Gui {
             return;
         }
         if !on {
+            self.engine_busy = false;
             if let Some(e) = self.engine.take() {
                 // it ends its jobs on its own threads; the window does not wait for that
                 self.winding = Some(e.w.clone());
@@ -353,10 +358,19 @@ impl Gui {
             Ok(e) => {
                 self.engine = Some(e);
                 self.engine_error.clear();
+                self.engine_busy = false;
                 self.lend = 1;
+            }
+            // Another worker lends on this folder already: no error -- it lends, and what the
+            // page sets reaches it.  The app takes over once it is gone (tick).
+            Err(e) if e == bb_worker::engine::BUSY => {
+                self.engine_busy = true;
+                self.engine_error.clear();
+                self.lend = 0;
             }
             Err(e) => {
                 self.engine_error = e;
+                self.engine_busy = false;
                 self.lend = 0;
             }
         }
@@ -663,6 +677,13 @@ impl Gui {
             }
             self.upd_ordered = true;
             self.update_now(ui);
+        }
+        // the worker that held the data folder is gone: the app lends from here on
+        if self.engine_busy && self.engine.is_none() && self.ticks % 3 == 0 {
+            self.set_lending(true);
+            if self.engine.is_some() {
+                ui.toast(IB_SUCCESS, t("Übernommen"), t("Der andere Worker ist beendet: die App verleiht jetzt selbst."), 0);
+            }
         }
         // this machine: cheap, and the navigation shows its running jobs on every page
         if let Some(e) = &self.engine {

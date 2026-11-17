@@ -141,7 +141,10 @@ pub fn spawn(spec: &Spec) -> Result<Proc, String> {
     let old = sys::affinity();
     let pinned = spec.affinity != 0 && old != 0 && sys::set_affinity(spec.affinity & old);
     let priority = if spec.low_priority { sys::lower_priority() } else { 0 };
+    // (macOS: what this process ignores the job would ignore, too -- SIGTERM in the app)
+    let ignored = sys::signals_default();
     let r = cmd.spawn();
+    sys::signals_restore(ignored);
     sys::restore_priority(priority);
     if pinned {
         sys::set_affinity(old);
@@ -156,6 +159,16 @@ pub fn spawn(spec: &Spec) -> Result<Proc, String> {
         tree.insert(pid);
     }
     Ok(Proc { child, pid, tree, out_end: false, err_end: false, exit: None })
+}
+
+/// Start a program on its own, outside this process's tree (plat::process::launch), with the
+/// signals a job would get: what this process ignores is not handed on (macOS).
+pub fn launch(program: &str, args: &[&str]) -> Result<(), u32> {
+    let _guard = SPAWN.lock();
+    let ignored = sys::signals_default();
+    let r = plat::process::launch(program, args);
+    sys::signals_restore(ignored);
+    r
 }
 
 impl Proc {

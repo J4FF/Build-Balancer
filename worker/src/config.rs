@@ -124,6 +124,7 @@ pub fn save(dir: &str, c: &Config) -> Result<(), String> {
     if !plat::fs::mkdir_private(dir) && plat::file_exists(dir) != 2 {
         return Err(format!("{} cannot be created", dir));
     }
+    bb_core::util::share_with_user(dir);
     if bb_core::j::save(&plat::fs::join(dir, "worker.json"), c) { Ok(()) } else { Err(format!("{} cannot be written", plat::fs::join(dir, "worker.json"))) }
 }
 

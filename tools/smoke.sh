@@ -80,7 +80,13 @@ in_state() { [ "$(state_of "$1")" = "$2" ] && echo yes; }
 kept() { ls "$work/worker/ws" 2>/dev/null | wc -l | tr -d ' '; }
 nothing_kept() { [ "$(kept)" = 0 ] && echo yes; }
 start_worker() {
-    "$bin/bb-worker$ext" run --data "$work/worker" >>"$work/worker.out" 2>&1 &
+    if [ "$win" = 1 ]; then
+        "$bin/bb-worker$ext" run --data "$work/worker" >>"$work/worker.out" 2>&1 &
+    else
+        # it ignores SIGTERM and SIGHUP, as a worker in the macOS app or under nohup does: its
+        # jobs must not (sh hands what it ignores on to what it execs)
+        sh -c 'trap "" TERM HUP; exec "$0" "$@"' "$bin/bb-worker" run --data "$work/worker" >>"$work/worker.out" 2>&1 &
+    fi
     worker_pid=$!
     wait_for 30 online >/dev/null || die "the worker did not come online" "$work/worker.out"
     worker_winpid=$(winpid "$worker_pid")
@@ -156,6 +162,16 @@ job=$("$bb" run -d --json --sh "$script" | grep '"job"' | sed 's/.*: "\(.*\)".*/
 "$bb" wait "$job" >/dev/null
 check "detached job, wait" 0 $?
 check "job state as JSON" done "$(state_of "$job")"
+# a detached job keeps what bb run said of its outputs: --no-fetch leaves them at the relay,
+# --to writes them elsewhere -- also when bb wait fetches them later
+rm -f out.txt
+job=$("$bb" run -d --json --out out.txt --no-fetch --sh "$script" | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+"$bb" wait "$job" --timeout 2m >/dev/null 2>&1
+check "bb wait leaves the outputs of a job sent with --no-fetch at the relay" no "$([ -f out.txt ] && echo yes || echo no)"
+job=$("$bb" run -d --json --out out.txt --to "$work/elsewhere" --sh "$script" | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+"$bb" wait "$job" --timeout 2m >/dev/null 2>&1
+check "... and writes those of a job sent with --to DIR there" changed "$(tr -d '\r' <"$work/elsewhere/out.txt" 2>/dev/null)"
+check "... and not into the project" no "$([ -f out.txt ] && echo yes || echo no)"
 
 # nothing stays behind: the main machine has the project removed, then the worker's owner does
 check "the project is kept for the next job" 1 "$(kept)"
@@ -181,6 +197,10 @@ start_worker
 "$bb" wait "$waited" >/dev/null
 check "the job that waited runs after a restart" 0 $?
 check "the job that ran is reported as interrupted" error "$(state_of "$ran")"
+if [ "$win" != 1 ] && command -v python3 >/dev/null 2>&1; then
+    term=$("$bb" run -q --no-sync -- python3 -c "import signal; print(int(signal.getsignal(signal.SIGTERM)))" 2>/dev/null | tr -d '\r ')
+    check "a job's SIGTERM is at its default, though the worker ignores it" 0 "$term"
+fi
 
 # what a job takes of the lent memory shows, also when it asked for none (python: a program that
 # takes 600 MB and holds it; the check is passed over where there is no python)
@@ -189,8 +209,10 @@ command -v python3 >/dev/null 2>&1 || py=python
 if command -v "$py" >/dev/null 2>&1; then
     held() { "$bb" workers --json | grep '"held"' | head -1 | sed 's/[^0-9]//g'; }
     holds() { [ "$(held)" -ge 400000000 ] 2>/dev/null && echo yes; }
-    hog=$("$bb" run -d --json --no-sync -- "$py" -c "import time; b = bytearray(600 << 20); b[::4096] = b'x' * len(b[::4096]); time.sleep(15)" | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
-    check "the memory a job takes counts against what is lent" yes "$(wait_for 30 holds)"
+    hog=$("$bb" run -d --json --no-sync -- "$py" -c "import time; b = bytearray(600 << 20); b[::4096] = b'x' * len(b[::4096]); time.sleep(60)" | grep '"job"' | sed 's/.*: "\(.*\)".*/\1/')
+    # (on a busy machine the job may take a while to get its memory: it holds it for a minute)
+    check "the memory a job takes counts against what is lent" yes "$(wait_for 60 holds)"
+    "$bb" cancel "$hog" >/dev/null 2>&1
     "$bb" wait "$hog" --timeout 1m >/dev/null 2>&1
 fi
 
@@ -241,7 +263,7 @@ wait_for 30 in_state "$big" running >/dev/null || die "the long job did not get 
 check "a light job runs at once beside a job that holds every processor" light "$(tr -d '\r ' <"$work/light.out")"
 check "... while that one still runs" running "$(state_of "$big")"
 if [ "$win" = 1 ]; then tools_jobs='echo %CARGO_BUILD_JOBS%'; else tools_jobs='echo $CARGO_BUILD_JOBS'; fi
-check "... and tells build tools one processor, not none" 1 "$("$bb" run -q --light --no-sync --sh "$tools_jobs" 2>/dev/null | tr -d ' ')"
+check "... and tells build tools one processor, not none" 1 "$("$bb" run -q --light --no-sync --sh "$tools_jobs" 2>/dev/null | tr -d '\r ')"
 # a program a job starts and leaves running: only where the worker's owner allows it
 "$bb" run -q --leave-running --no-sync --sh "echo x" >"$work/leave.out" 2>&1
 check "a program is left running only where the worker's owner allows it" 1 "$(grep -c -- "--leave-running yes" "$work/leave.out")"
@@ -257,6 +279,23 @@ alive() { [ -f "$work/alive.txt" ] && echo yes; }
 check "... which goes on after the job's end" yes "$(wait_for 30 alive)"
 "$bb" cancel "$big" >/dev/null 2>&1
 wait_for 30 in_state "$big" cancelled >/dev/null
+
+# a list of workers that cannot be read is an error, not "no worker" (Linux, macOS: chmod;
+# the Windows case -- a file an administrator wrote -- needs one to test)
+if [ "$win" != 1 ] && [ "$(id -u)" != 0 ]; then
+    chmod 000 "$BB_CONFIG/workers.json"
+    "$bb" workers >"$work/unreadable.out" 2>&1
+    check "a worker list that cannot be read is an error, not an empty list" 1 "$(grep -c "workers.json cannot be read" "$work/unreadable.out")"
+    chmod 600 "$BB_CONFIG/workers.json"
+fi
+
+# a worker that the main machine removes says so -- once, not with every report
+"$bb" unpair smoke-worker >/dev/null 2>&1
+check "bb unpair" 0 $?
+removed() { [ "$(grep -c "no longer admits this worker" "$work/worker/logs/worker.log" 2>/dev/null)" -ge 1 ] && echo yes; }
+check "a worker that was removed on the main machine says so" yes "$(wait_for 40 removed)"
+sleep 22
+check "... once, not every ten seconds" 1 "$(grep -c "no longer admits this worker" "$work/worker/logs/worker.log")"
 
 # a machine that only paired: the main machine says what is missing there
 second_code() { grep "bb-worker join" "$work/pair2.out" 2>/dev/null | awk '{print $4}'; }

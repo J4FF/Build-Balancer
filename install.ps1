@@ -99,7 +99,20 @@ switch ($Action) {
     }
     'worker' {
         if (-not $First -or -not $Second) { throw "worker needs the relay's address and the code: both are shown by 'bb pair' (or `"Add a machine`") on the main machine" }
-        & (Join-Path $dir 'bb-worker.exe') join $First $Second
+        # Pair only: the app lends, where this machine's owner sees and sets what it lends.  A
+        # worker left running in this window would hold the data folder, and the app could
+        # not lend beside it.  (A machine without a screen: bb-worker run, or the service.)
+        & (Join-Path $dir 'bb-worker.exe') join $First $Second --no-run
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if ($admin) {
+            # an app started from here would run as administrator, too
+            Write-Host "Paired.  Start `"Build Balancer`" from the start menu (not as administrator): it lends this machine's power while it runs."
+        }
+        else {
+            Write-Host "Paired.  Build Balancer starts now and lends this machine's power while it runs; its page `"This machine`" sets how much."
+            Start-Process (Join-Path $dir 'BuildBalancer.exe')
+        }
     }
     'main' {
         if (-not $First -or -not $Second) { throw "main needs the relay's address and its setup key: the line the relay printed" }
