@@ -153,6 +153,17 @@ impl Worker {
         self.release_removal(project_id, slot);
         r
     }
+
+    /// Remove the copy of a project's slot in one place (cleanup::remove_in), held free of
+    /// jobs meanwhile.
+    pub fn remove_in(&self, root: &str, project_id: &str, slot: &str) -> Result<u64, String> {
+        if !self.reserve_removal(project_id, slot) {
+            return Err(String::from(cleanup::BUSY));
+        }
+        let r = cleanup::remove_in(root, project_id, slot);
+        self.release_removal(project_id, slot);
+        r
+    }
 }
 
 /// Worker::restart: fetch the newest release first, then start again (the main machine asked)
@@ -444,6 +455,11 @@ fn scheduler(w: &Arc<Worker>) {
                     plat::log_warn("worker", &e);
                 }
             });
+            // a drive that was given up: what lies there goes as soon as no job runs in it
+            let c = w.cfg.lock().clone();
+            if c.disk == 0 || c.stores.iter().any(|s| s.disk == 0) {
+                cleanup::give_up(&w.dir, &c, &|r, p, s| w.remove_in(r, p, s));
+            }
             // `bb-worker update` asks whoever runs here to start again with the programs that
             // are there now
             if let Some(text) = plat::read_file(&restart_request(&w.dir)) {
@@ -464,7 +480,7 @@ fn scheduler(w: &Arc<Worker>) {
         if t >= next_tidy {
             next_tidy = t + 3_600_000;
             let days = w.cfg.lock().keep_days;
-            cleanup::expire(&w.dir, days, &|p, s| w.remove_project(p, s));
+            cleanup::expire(&w.dir, days, &|r, p, s| w.remove_in(r, p, s));
             job::prune(&w.dir);
         }
         if t >= next_resend {
@@ -520,7 +536,8 @@ fn reload_config(w: &Worker, seen: &mut i64) {
         return;
     }
     if *cur != new {
-        plat::log_info("worker", &format!("settings taken over: {} processors, {} memory, {} disk, {} jobs", new.cpu, size_text(new.ram), size_text(new.disk), new.jobs));
+        let drives: String = new.stores.iter().map(|s| format!(", {} on {}", if s.disk == 0 { String::from("nothing") } else { size_text(s.disk) }, s.path)).collect();
+        plat::log_info("worker", &format!("settings taken over: {} processors, {} memory, {} disk{}, {} jobs", new.cpu, size_text(new.ram), size_text(new.disk), drives, new.jobs));
         *cur = new;
         drop(cur);
         w.sched.lock().dirty = true;
@@ -539,11 +556,11 @@ fn start_jobs(w: &Arc<Worker>) {
         if w.hold.load(Relaxed) {
             return;
         }
+        // (light jobs hold nothing and are not among the jobs at once)
         let held_cpu: u32 = s.running.iter().map(|r| r.cpu).sum();
         let held_ram: u64 = s.running.iter().map(|r| r.ram).sum();
-        if s.running.len() as u32 >= lent_jobs {
-            return;
-        }
+        let light = s.running.iter().filter(|r| r.spec.light).count();
+        let heavy = s.running.len() - light;
         // the lent number changed: deal the processors anew as soon as no job holds any
         if s.running.is_empty() && s.cores.pinning() && s.cores.lent_count() != lent_cpu {
             s.cores = Cores::new(lent_cpu);
@@ -553,19 +570,32 @@ fn start_jobs(w: &Arc<Worker>) {
         let pin_max = s.cores.lent_count();
         let pinned = |cpu: u32| cpu.min(pin_max);
         let fit = s.queue.iter().position(|q| {
+            let in_ws = s.running.iter().any(|r| r.spec.project_id == q.project_id && r.spec.slot == q.slot);
+            // none in a workspace that is being removed
+            if s.going(&q.project_id, &q.slot) {
+                return false;
+            }
+            if q.light {
+                // Beside the others, holding nothing: only a few at a time.  One that brings
+                // files waits for the workspace like any job; one that does not shares it.
+                return light < proto::LIGHT_AT_ONCE && (q.tree.is_empty() || !in_ws);
+            }
             let cpu = job_cpus(q, lent_cpu);
-            // one job per workspace, and none in a workspace that is being removed
-            let ws_free = !s.running.iter().any(|r| r.spec.project_id == q.project_id && r.spec.slot == q.slot) && !s.going(&q.project_id, &q.slot);
             // a job that is to be pinned waits for processors of its own rather than run on all
             let cores_free = !s.cores.pinning() || s.cores.free_count() >= pinned(cpu);
-            ws_free && cores_free && held_cpu + cpu <= lent_cpu && held_ram + q.ram <= lent_ram
+            // one job per workspace
+            (heavy as u32) < lent_jobs && !in_ws && cores_free && held_cpu + cpu <= lent_cpu && held_ram + q.ram <= lent_ram
         });
         let Some(i) = fit else { return };
         let Some(spec) = s.queue.remove(i) else { return };
-        let cpu = job_cpus(&spec, lent_cpu);
-        let take = pinned(cpu);
-        let mask = s.cores.take(take);
-        let r = Arc::new(Running { ram: spec.ram, spec, state: Mutex::new(String::from(proto::ST_SYNCING)), cpu, mask, started: now(), cancel: AtomicBool::new(false), rss: AtomicU64::new(0), kill: Mutex::new(None) });
+        // a light job runs on all the lent processors, holding none of them
+        let (cpu, mask, ram) = if spec.light {
+            (0, s.cores.lent_mask(), 0)
+        } else {
+            let cpu = job_cpus(&spec, lent_cpu);
+            (cpu, s.cores.take(pinned(cpu)), spec.ram)
+        };
+        let r = Arc::new(Running { ram, spec, state: Mutex::new(String::from(proto::ST_SYNCING)), cpu, mask, started: now(), cancel: AtomicBool::new(false), rss: AtomicU64::new(0), kill: Mutex::new(None) });
         s.running.push(r.clone());
         s.dirty = true;
         drop(s);
@@ -576,7 +606,9 @@ fn start_jobs(w: &Arc<Worker>) {
             {
                 let mut s = w.sched.lock();
                 s.running.retain(|x| !Arc::ptr_eq(x, &r));
-                s.cores.give_back(r.mask);
+                if !r.spec.light {
+                    s.cores.give_back(r.mask);
+                }
                 s.dirty = true;
             }
             job::refuse(w, &r.spec, proto::ST_ERROR, "the worker could not start a thread for the job (out of threads or memory); run it again");
@@ -606,7 +638,19 @@ fn watch_memory(w: &Worker) {
 
 fn status(w: &Worker) -> WorkerStatus {
     let c = w.cfg.lock().clone();
-    let (free, total) = plat::fs::free_space(&w.dir).unwrap_or((0, 0));
+    // the disk: every place that lends something and is there, each volume counted once
+    let places: Vec<config::Place> = config::places(&w.dir, &c).into_iter().filter(|p| p.limit > 0).collect();
+    let (mut free, mut total, mut volumes) = (0u64, 0u64, Vec::new());
+    for p in &places {
+        let at = if p.path.is_empty() { w.dir.as_str() } else { p.path.as_str() };
+        let dev = plat::fs::stat(at).map_or(0, |m| m.dev);
+        if let Some((f, t)) = plat::fs::free_space(at).filter(|_| !volumes.contains(&dev)) {
+            volumes.push(dev);
+            free += f;
+            total += t;
+        }
+    }
+    let lent_disk: u64 = places.iter().map(|p| p.limit).sum();
     let workspaces = config::workspaces(&w.dir);
     // everything that asks the system or takes another lock comes before the scheduler's lock
     let (host, cpu_model, ram_free, cpu_busy) = (plat::net::hostname(), plat::cpu_brand(), bb_exec::sys::mem_available(), w.meter.lock().percent());
@@ -628,9 +672,12 @@ fn status(w: &Worker) -> WorkerStatus {
         cpu_busy,
         disk_total: total,
         disk_free: free,
-        offer: Offer { cpu: c.cpu, ram: c.ram, disk: c.disk, jobs: c.jobs },
+        offer: Offer { cpu: c.cpu, ram: c.ram, disk: lent_disk, jobs: c.jobs },
         cpu_reserved: s.running.iter().map(|r| r.cpu).sum(),
         ram_reserved: s.running.iter().map(|r| r.ram).sum(),
+        // (a light job reserves nothing at admission, but what it asked for still counts as held)
+        ram_used: s.running.iter().map(|r| r.spec.ram.max(r.rss.load(Relaxed))).sum(),
+        leave_running: c.leave_running,
         disk_used: workspaces.iter().map(|x| x.bytes).sum(),
         enforce_cpu: String::from(if s.cores.pinning() { "affinity" } else { "hint" }),
         enforce_ram: String::from("watchdog"),

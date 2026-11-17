@@ -62,6 +62,8 @@ pub struct Gui {
     upd_retry_at: u64,
     /// this window could not start itself again (it said so, and does not try over and over)
     restart_failed: bool,
+    /// a drive was switched off while a removal ran: emptied once that is through
+    give_up_pending: bool,
     pub nav: NavState,
     pub page: Page,
     ticks: u32,
@@ -84,6 +86,10 @@ pub struct Gui {
     pub engine_error: String,
     pub wstatus: Option<WorkerStatus>,
     pub projects: Vec<cleanup::Project>,
+    /// the drives of this machine, and what the projects take in each place it lends
+    /// ("": the data folder) -- looked at every few seconds, not in every frame
+    pub volumes: Vec<bb_exec::sys::Volume>,
+    pub place_used: Vec<(String, u64)>,
     pub clean_task: Outcome<String>,
     pub ask_leave: Shared<i32>,
     pub ask_close: Shared<i32>,
@@ -137,6 +143,7 @@ impl Gui {
             upd_waiting: false,
             upd_ordered: false,
             restart_failed: false,
+            give_up_pending: false,
             upd_tries: 0,
             upd_retry_at: 0,
             nav: NavState::default(),
@@ -155,6 +162,8 @@ impl Gui {
             engine_error: String::new(),
             wstatus: None,
             projects: Vec::new(),
+            volumes: Vec::new(),
+            place_used: Vec::new(),
             clean_task: None,
             ask_leave: Shared::new(0),
             ask_close: Shared::new(0),
@@ -358,10 +367,45 @@ impl Gui {
         if self.demo {
             return;
         }
-        if let Some(c) = &self.wcfg
-            && let Err(e) = config::save(&self.worker_dir, c)
-        {
+        let Some(c) = self.wcfg.as_mut() else { return };
+        // a drive that was switched off and holds nothing any more is forgotten
+        cleanup::forget_given_up(c);
+        if let Err(e) = config::save(&self.worker_dir, c) {
             ui.toast(IB_ERROR, t("Nicht gespeichert"), &e, 0);
+            return;
+        }
+        self.give_up(ui);
+    }
+
+    /// A drive that was switched off: a running worker empties it (it knows where a job is at
+    /// work); without one it is emptied here -- once a removal that runs is through.
+    fn give_up(&mut self, ui: &mut Ui) {
+        let Some(c) = self.wcfg.clone() else { return };
+        let given_up = (c.disk == 0 && !config::workspaces_in(&self.worker_dir).is_empty()) || c.stores.iter().any(|s| s.disk == 0 && plat::file_exists(&config::store_root(&s.path, &c.id)) != 0);
+        if self.engine.is_some() || !given_up {
+            return;
+        }
+        if self.clean_task.is_some() {
+            self.give_up_pending = true;
+            return;
+        }
+        {
+            let dir = self.worker_dir.clone();
+            // (a worker that was switched off may still be ending its jobs: it holds their
+            // workspaces free of removal until they are through)
+            let winding = self.winding.clone();
+            self.clean_task = Some(ui.spawn(spawn_blocking(move || {
+                let _lock = plat::FileLock::acquire(&plat::fs::join(&dir, "worker.lock")).ok_or_else(|| String::from(t("Ein anderer Worker arbeitet auf diesem Datenordner: er leert das Laufwerk.")))?;
+                let remove = |r: &str, p: &str, s: &str| match &winding {
+                    Some(w) => w.remove_in(r, p, s),
+                    None => cleanup::remove_in(r, p, s),
+                };
+                if cleanup::give_up(&dir, &c, &remove) {
+                    Ok(String::from(t("Was auf dem ausgeschalteten Laufwerk lag, ist entfernt.")))
+                } else {
+                    Err(String::from(t("Nicht alles auf dem ausgeschalteten Laufwerk ließ sich entfernen (eine Datei ist in einem anderen Programm geöffnet).")))
+                }
+            })));
         }
     }
 
@@ -397,8 +441,12 @@ impl Gui {
     /// forget the pairing and remove everything this machine kept for it
     pub fn leave(&mut self, ui: &mut Ui) {
         self.set_lending(false);
-        if !self.demo && !cleanup::purge(&self.worker_dir) {
-            ui.toast(IB_WARNING, t("Nicht alles entfernt"), t("Eine Datei ist noch in einem anderen Programm geöffnet."), 0);
+        if !self.demo
+            && let Err(e) = cleanup::purge(&self.worker_dir)
+        {
+            // (the pairing stays: what is left is found again by a second try)
+            ui.toast(IB_WARNING, t("Nicht alles entfernt"), &e, 0);
+            return;
         }
         self.wcfg = None;
         self.projects.clear();
@@ -566,6 +614,7 @@ impl Gui {
                     slot: t.slot.clone(),
                     label: t.name.clone(),
                     sync: true,
+                    ..Request::default()
                 }
             }
             None => {
@@ -622,6 +671,10 @@ impl Gui {
         if self.is_worker() && (self.page == Page::Worker || self.ticks % 5 == 0) {
             self.projects = cleanup::projects(&self.worker_dir);
         }
+        // (a drive that was plugged in shows within a few seconds)
+        if self.is_worker() && self.page == Page::Worker && self.ticks % 3 == 1 {
+            self.refresh_drives();
+        }
         if self.wcfg.is_some() && self.ticks % 3 == 0 && !self.offer_dirty {
             // settings changed from outside (bb-worker config)
             if let Some(c) = config::load(&self.worker_dir) {
@@ -644,7 +697,40 @@ impl Gui {
         self.refresh_jobs(ui);
         if self.is_worker() {
             self.projects = cleanup::projects(&self.worker_dir);
+            self.refresh_drives();
         }
+    }
+
+    /// the drives, and what the projects take in each place
+    pub fn refresh_drives(&mut self) {
+        if self.demo {
+            return;
+        }
+        self.volumes = bb_exec::sys::volumes();
+        self.place_used = match &self.wcfg {
+            Some(c) => config::places(&self.worker_dir, c).into_iter().map(|p| (p.path.clone(), config::workspaces_in(&p.root).iter().map(|w| w.bytes).sum())).collect(),
+            None => Vec::new(),
+        };
+    }
+
+    /// which of the drives holds the data folder
+    pub fn data_volume(&self) -> Option<usize> {
+        if self.demo {
+            return Some(0);
+        }
+        // (the folder may not be there yet: the nearest one above it that is)
+        let mut p = self.worker_dir.as_str();
+        let dev = loop {
+            if let Some(m) = plat::fs::stat(p) {
+                break m.dev;
+            }
+            let up = plat::fs::parent(p);
+            if up.is_empty() || up == p {
+                return None;
+            }
+            p = up;
+        };
+        self.volumes.iter().position(|v| plat::fs::stat(&v.path).is_some_and(|m| m.dev == dev))
     }
 
     /// take what the background tasks finished
@@ -712,6 +798,10 @@ impl Gui {
                 Err(e) => ui.toast(IB_WARNING, t("Nicht entfernt"), &e, 10_000),
             };
             self.projects = cleanup::projects(&self.worker_dir);
+            self.refresh_drives();
+            if core::mem::take(&mut self.give_up_pending) {
+                self.give_up(ui);
+            }
         }
         if let Some(r) = done(&mut self.fleet_task) {
             self.fleet_loaded = true;

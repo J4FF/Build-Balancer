@@ -43,6 +43,10 @@ pub struct Request {
     pub label: String,
     /// send the project's files first (false: run in the workspace as the worker has it)
     pub sync: bool,
+    /// a light job: no processors held, it starts at once beside the others (JobSpec::light)
+    pub light: bool,
+    /// start the program and leave it running on the worker (JobSpec::leave_running)
+    pub leave_running: bool,
 }
 
 /// the id of the workspace for commands outside a project
@@ -59,8 +63,40 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
     if slot.is_empty() {
         return Err(String::from("the slot's name needs letters or digits"));
     }
+    let light = req.light || req.leave_running;
+    // what a worker said of itself last: a program is left running only where its owner
+    // allows it, and only a worker from 0.1.4 on knows how
+    let cannot_leave = |v: &WorkerView| match &v.status {
+        Some(s) if bb_update::newer("0.1.4", &s.version) => Some(format!("{} runs version {}, which cannot leave a program running: bring it up to date first (bb update -w {})", v.paired.name, s.version, v.paired.name)),
+        Some(s) if !s.leave_running => Some(format!("{} lets no program outlive its job: on that machine, `bb-worker config --leave-running yes` (or the switch in the app) allows it", v.paired.name)),
+        _ => None,
+    };
+    let auto = req.worker.is_empty() || req.worker == "auto";
     let (worker, key) = {
-        let v = fleet::pick(views, &req.worker, &needs, req.cpu, req.ram)?;
+        // (chosen by itself: among the workers that can -- a named one says why it cannot)
+        let able: Vec<WorkerView>;
+        let pool: &[WorkerView] = if req.leave_running && auto {
+            able = views.iter().filter(|v| cannot_leave(v).is_none()).cloned().collect();
+            if able.is_empty() {
+                let why: Vec<String> = views.iter().filter_map(cannot_leave).collect();
+                return Err(format!("no worker can leave a program running: {}", if why.is_empty() { String::from("none has said what it allows yet") } else { why.join("; ") }));
+            }
+            &able
+        } else {
+            views
+        };
+        let v = fleet::pick(pool, &req.worker, &needs, req.cpu, req.ram)?;
+        if let Some(s) = &v.status {
+            let old = bb_update::newer("0.1.4", &s.version);
+            if req.leave_running
+                && let Some(why) = cannot_leave(v)
+            {
+                return Err(why);
+            }
+            if light && old {
+                say(&format!("note: {} runs version {}: it runs this light job as an ordinary one of one processor", v.paired.name, s.version));
+            }
+        }
         (v.paired.clone(), ctx.pair_key(&v.paired).ok_or("the worker's key is damaged; pair it again")?)
     };
 
@@ -102,9 +138,12 @@ pub fn submit(ctx: &Ctx, project: Option<&Project>, req: &Request, views: &mut [
         script: req.script.clone(),
         cwd: req.cwd.replace('\\', "/"),
         env: req.env.clone(),
-        cpu: req.cpu,
+        // (a light job holds none; a worker before 0.1.4 runs it as a job of one processor)
+        cpu: if light && req.cpu == 0 { 1 } else { req.cpu },
         ram: req.ram,
         timeout: req.timeout,
+        light,
+        leave_running: req.leave_running,
         outputs: req.outputs.clone(),
         created: now(),
         label: req.label.clone(),

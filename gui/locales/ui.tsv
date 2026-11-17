@@ -226,3 +226,21 @@ Update fehlgeschlagen	The update failed
 Version {}	version {}
 {} holt die neue Version, sobald dort kein Auftrag läuft, und meldet sich danach wieder.	{} fetches the new version as soon as no job runs there, and reports back afterwards.
 kann sich noch nicht selbst aktualisieren – dort einmal die Installationszeile ausführen	cannot update itself yet – run the install line there once more
+Platz für Projekte	Room for projects
+Datenordner	data folder
+{} (Datenordner)	{} (data folder)
+nicht angeschlossen	not plugged in
+wird geleert …	being emptied …
+{} für Projekte · {} frei	{} for projects · {} free
+{} von {} verfügbar	{} of {} available
+Nicht möglich	Not possible
+Mindestens ein Laufwerk muss Platz für Projekte hergeben.	At least one drive has to give room to projects.
+Ein Laufwerk zählt nur, solange es angeschlossen ist. Wird eines ausgeschaltet, wird geleert, was dort liegt – ein Projekt wird beim nächsten Auftrag einfach neu übertragen.	A drive counts only while it is plugged in. When one is switched off, what lies there is removed – a project is simply sent again with its next job.
+Ein anderer Worker arbeitet auf diesem Datenordner: er leert das Laufwerk.	Another worker works on this data folder: it empties the drive.
+Was auf dem ausgeschalteten Laufwerk lag, ist entfernt.	What lay on the drive that was switched off is removed.
+Nicht alles auf dem ausgeschalteten Laufwerk ließ sich entfernen (eine Datei ist in einem anderen Programm geöffnet).	Not everything on the drive that was switched off could be removed (a file is open in another program).
+Systemlaufwerk	System drive
+Aufträge dürfen Programme starten, die nach ihnen weiterlaufen (bb run --leave-running)	Jobs may start programs that go on after them (bb run --leave-running)
+leicht, neben den anderen	light, beside the others
+Nicht angeschlossen	Not plugged in
+Dieses Laufwerk ist gerade nicht eingehängt.	This drive is not mounted right now.

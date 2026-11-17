@@ -10,13 +10,25 @@
 //   mem_available()                   memory that programs can still get without swapping
 //   cpu_times()                       (busy, total) processor time of the whole machine so far
 //   own_pid(), processes(), rss(pid)  every process with its parent; a process's resident memory
+//   volumes()                         the drives files can be kept on, with their free space
 //
 // The only file of Build Balancer with `unsafe`: Windows calls through raw-dylib imports (no
 // import libraries), Linux through the system calls of rt::os and the files of /proc, macOS
 // through libSystem.
 #![allow(unsafe_code)]
 
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
+
+/// a drive of this machine that files can be kept on
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Volume {
+    /// where it is: "E:/" on Windows, the folder it is mounted on elsewhere ("/", "/media/me/Stick")
+    pub path: String,
+    pub free: u64,
+    pub total: u64,
+}
 
 /// a process as the system lists it
 #[derive(Clone, Copy, Debug)]
@@ -456,4 +468,69 @@ pub fn rss(pid: u32) -> u64 {
 pub fn children() -> Vec<u32> {
     let me = own_pid();
     processes().iter().filter(|p| p.parent == me && p.pid != me).map(|p| p.pid).collect()
+}
+
+/// One line of /proc/mounts -> the folder a drive with files of its own is mounted on.  Left
+/// out: what is no drive (proc, tmpfs, overlays ...), what the system mounts for itself
+/// (/boot, /snap ...), and network folders, which come and go with the network.
+pub fn mount_point(line: &str) -> Option<String> {
+    let mut f = line.split(' ');
+    let (_device, at, kind) = (f.next()?, f.next()?, f.next()?);
+    const KINDS: &[&str] = &["ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "zfs", "bcachefs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "hfsplus", "apfs", "udf"];
+    if !KINDS.contains(&kind) {
+        return None;
+    }
+    // "\040" is a blank, "\011" a tab, "\134" the backslash itself
+    let mut path = String::new();
+    let mut rest = at;
+    while let Some(i) = rest.find('\\') {
+        path.push_str(&rest[..i]);
+        match rest.get(i + 1..i + 4).and_then(|o| u8::from_str_radix(o, 8).ok()) {
+            Some(c) => {
+                path.push(c as char);
+                rest = &rest[i + 4..];
+            }
+            None => {
+                path.push('\\');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    path.push_str(rest);
+    const OWN: &[&str] = &["/boot", "/efi", "/snap", "/proc", "/sys", "/dev", "/var/lib/docker", "/var/lib/containers", "/var/snap", "/nix"];
+    if OWN.iter().any(|o| path == *o || path.starts_with(&format!("{}/", o))) {
+        return None;
+    }
+    Some(path)
+}
+
+/// The drives of this machine that files can be kept on -- built in, plugged in, a card --
+/// each once, with its free space.  Windows: the drive letters that hold a medium.  Linux:
+/// what is mounted from a drive (mount_point).  macOS: the start volume and what lies under
+/// /Volumes.
+pub fn volumes() -> Vec<Volume> {
+    let paths: Vec<String> = if cfg!(windows) {
+        plat::drives()
+    } else if cfg!(target_os = "macos") {
+        let mut list = alloc::vec![String::from("/")];
+        list.extend(plat::fs::read_dir("/Volumes").unwrap_or_default().into_iter().map(|e| format!("/Volumes/{}", e.name)));
+        list
+    } else {
+        let mounts = plat::read_file("/proc/mounts").unwrap_or_default();
+        String::from_utf8_lossy(&mounts).lines().filter_map(mount_point).collect()
+    };
+    let mut seen: Vec<u64> = Vec::new();
+    let mut out = Vec::new();
+    for path in paths {
+        // (a letter without a medium, a folder that is no drive of its own: no space of its own)
+        let Some((free, total)) = plat::fs::free_space(&path).filter(|s| s.1 > 0) else { continue };
+        // the same drive under two names (a link under /Volumes, a folder mounted twice)
+        let Some(dev) = plat::fs::stat(&path).map(|m| m.dev) else { continue };
+        if seen.contains(&dev) {
+            continue;
+        }
+        seen.push(dev);
+        out.push(Volume { path, free, total });
+    }
+    out
 }

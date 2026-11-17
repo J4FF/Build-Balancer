@@ -133,6 +133,8 @@ fn tools() -> Value {
                 ("cwd", "string", "The folder inside the project to run in (default: its root)."),
                 ("slot", "string", "A separate copy of the project on the worker (default \"main\"); jobs of one slot run one after the other."),
                 ("sync", "boolean", "Send the project's files first (default true)."),
+                ("light", "boolean", "A light job: it holds no processors and starts at once, beside the jobs that do (a screenshot, a look at a log, `ls`). Two at a time per worker, 10 minutes at most."),
+                ("leave_running", "boolean", "Start the program and leave it running on the worker (an app with a window, a server): the job ends as soon as it has started. Only where the worker's owner allows it (bb-worker config --leave-running yes). Without it, everything a job starts -- also with nohup or & -- ends with the job."),
                 P_DIR,
                 P_WAIT,
             ],
@@ -233,6 +235,8 @@ fn call(dir: &str, name: &str, a: &Value) -> Result<Value, String> {
                 slot: String::from(a_str(a, "slot")),
                 label: String::new(),
                 sync,
+                light: a.get("light").and_then(Value::as_bool).unwrap_or(false),
+                leave_running: a.get("leave_running").and_then(Value::as_bool).unwrap_or(false),
             };
             let mut views = fleet::fleet(&ctx)?;
             let mut notes = Vec::new();
@@ -259,6 +263,7 @@ fn call(dir: &str, name: &str, a: &Value) -> Result<Value, String> {
                 slot: t.slot.clone(),
                 label: t.name.clone(),
                 sync: true,
+                ..Request::default()
             };
             let mut views = fleet::fleet(&ctx)?;
             let mut rec = jobs::submit(&ctx, Some(&project), &req, &mut views, &mut |_| {})?;

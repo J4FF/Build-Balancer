@@ -210,8 +210,16 @@ for both.
 ![The page "This machine": what it lends, what runs, the projects kept here](docs/img/this-machine.png)
 
 **On a machine that lends power**, the switch **Lend power** turns the worker on and off;
-the sliders set how many processors, how much memory and how much disk jobs may use, and
-take effect at once.
+the sliders set how many processors and how much memory jobs may use, and take effect at
+once.
+
+Under **Room for projects** every drive of the machine is listed -- the one with the data
+folder, other built-in ones, and external drives and sticks as soon as they are plugged in
+-- each with its free space. Switch a drive on and set how much of it projects may take;
+each drive keeps to its own limit, and a new project goes to the drive with the most room.
+A drive counts only while it is plugged in: a project that lay on one that was unplugged is
+simply sent again with its next job. Switching a drive off empties it (a job that runs there
+is waited for).
 
 Under **Projects on this machine** every project that has files here is listed with its size.
 **Remove** deletes everything of one -- its files, the build output that grew next to them,
@@ -260,10 +268,22 @@ The important options of `bb run`:
 | `--slot NAME` | a separate copy of the project on the worker, so jobs can run side by side |
 | `-d` | do not wait; `bb wait JOB`, `bb logs -f JOB` follow later |
 | `--no-sync`, `--no-fetch`, `--to DIR` | skip sending files / leave outputs at the relay / write them elsewhere |
+| `--light` | holds no processors and starts at once, beside the jobs that hold them: for what needs almost nothing and should be answered now (a screenshot, `pgrep`, a look at a log). Two at a time per worker, 10 minutes at most; the memory it takes counts, but none is set aside for it. |
+| `--leave-running` | start the program and leave it running on the worker (an app with a window, a server): the job ends as soon as the start is handed to the system |
 | `--json` | one JSON document instead of text (on every command) |
 
 `bb run` exits with the command's own exit code (130 cancelled, 137 ended by a limit, 1 when
 it could not run).
+
+**What a job starts ends with it** -- also what it starts with `nohup` or `&`: the worker ends
+the job's whole process tree, so nothing is left behind. `--leave-running` is the way to start
+something that is to go on: the worker hands it to the system to start on its own, says its
+process id (Linux, macOS), and sends its output to a file there -- the job's output shows
+what the program said in its first moment, so one that could not start says so; the worker
+neither counts, watches nor ends it. A worker
+allows that only when its owner says so, with `bb-worker config --leave-running yes` or the
+switch on the app's page **This machine**. A program with a window needs a worker that runs in
+the user's session: the app, or `bb-worker run` in a terminal -- not the service.
 
 ### What is sent
 
@@ -312,18 +332,26 @@ start one process per processor of the whole machine.
 
 ```sh
 bb-worker config --cpu 6 --ram 12G --disk 40G --jobs 4 --priority low --tags gpu,fast-disk
+bb-worker drives                                 # the drives of this machine, with their free space
+bb-worker config --store E:=200G                 # projects on another drive, too
+bb-worker config --store /media/me/Extern=50%    # (Linux, macOS: where it is mounted)
+bb-worker config --store E:=off                  # given up: what lies there is removed
+bb-worker config --disk 0 --store E:=200G        # on that drive only
+bb-worker config --leave-running yes             # jobs may start programs that go on after them
 bb-worker config                # show
 bb-worker tools                 # the build tools jobs can use here
 ```
 
 A running worker takes changes over within seconds. Shares work too: `--cpu 50%`,
-`--ram 50%`, `--disk 50%` (of the free space).
+`--ram 50%`, `--disk 50%` (of the free space), `--store E:=50%` (of that drive's). On a drive
+the worker keeps its projects in `BuildBalancer/<worker id>/`; a drive that is not plugged in
+is passed over until it is back.
 
 | Limit | How it is held |
 | --- | --- |
 | Processors | Jobs are pinned to the lent processors (CPU affinity), each job to its own. A job with `--cpu 2` runs on exactly two. Machines with more than 64 processors: a hint only. |
 | Memory | The worker measures every job's processes. When the jobs together hold more than is lent, the one furthest above what it asked for is ended (`killed`, with the reason). |
-| Disk | The projects' workspaces count against the lent space. Before a sync, workspaces unused the longest make room; a job that grows beyond the limit is ended. |
+| Disk | The projects' workspaces count against the lent space, on every drive against its own. Before a sync, workspaces unused the longest make room; a job that grows beyond the limit is ended. |
 | Priority | `low` (the default): jobs run below normal priority and yield to whatever else the machine does. `normal` for a dedicated build machine. |
 | Jobs at once | `--jobs`; jobs of the same project and slot always run one after the other. |
 

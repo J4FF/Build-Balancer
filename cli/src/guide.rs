@@ -58,6 +58,23 @@ leave out; .git itself is left out.  So generated files that the build needs but
 must be listed in buildbalancer.ini under [sync] include.  bb sync -w NAME sends without
 running anything.  --no-sync runs in the workspace as the worker already has it.
 
+Light jobs.  A job holds processors (all the worker lends, or --cpu N) and waits until they are
+free.  bb run --light holds none: it starts at once beside the running jobs, on the lent
+processors -- for what needs almost nothing and should be answered now (a
+screenshot, pgrep, a look at a log, ls).  Two at a time per worker, 10 minutes at most; the
+memory it takes counts, but none is set aside for it.  With --no-sync it runs in the
+workspace even while another job builds there.
+
+What a job starts ends with it.  The worker ends the job's whole process tree when the job
+ends, also what was started with nohup or &.  bb run --leave-running starts the program on its
+own instead and leaves it running (an app with a window, a server): the job ends as soon as
+the start is handed to the system, says the program's process id (Linux, macOS) and what it
+said in its first moment (one that could not start says so); the rest of its output goes to
+a file on the worker.  The worker neither counts, watches nor ends it.  Only where the worker's owner
+allows it: bb-worker config --leave-running yes there (or the switch in the app); bb workers
+--json says it (leave_running).  A program with a window needs a worker that runs in the
+user's session -- the app or bb-worker run in a terminal, not the service.
+
 Slots.  A worker holds one copy of a project per slot (default slot: main); jobs of one slot
 run one after the other.  --slot NAME gives a job its own copy, e.g. one per target, so they
 can run at the same time on one worker without sharing build folders.
