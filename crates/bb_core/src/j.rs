@@ -36,7 +36,11 @@ pub fn load<T: Json>(path: &str) -> Option<T> {
 pub fn save<T: Json>(path: &str, v: &T) -> bool {
     // a record beyond the limits has no text: the file as it is stays rather than an empty one
     let text = pretty(&v.to_json());
-    !text.is_empty() && plat::fs::write_file_private(path, text.as_bytes())
+    let ok = !text.is_empty() && plat::fs::write_file_private(path, text.as_bytes());
+    if ok {
+        crate::util::share_with_user(path);
+    }
+    ok
 }
 
 /// a string value

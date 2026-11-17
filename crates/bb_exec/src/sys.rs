@@ -11,6 +11,8 @@
 //   cpu_times()                       (busy, total) processor time of the whole machine so far
 //   own_pid(), processes(), rss(pid)  every process with its parent; a process's resident memory
 //   volumes()                         the drives files can be kept on, with their free space
+//   signals_default() / signals_restore(set)   Linux, macOS: the ending signals this process
+//                                     ignores, at their default for the moment a child starts
 //
 // The only file of Build Balancer with `unsafe`: Windows calls through raw-dylib imports (no
 // import libraries), Linux through the system calls of rt::os and the files of /proc, macOS
@@ -225,6 +227,51 @@ mod imp {
         fn mach_host_self() -> u32;
         fn host_statistics(host: u32, flavor: c_int, info: *mut u32, count: *mut u32) -> c_int;
         fn host_statistics64(host: u32, flavor: c_int, info: *mut u32, count: *mut u32) -> c_int;
+        fn sigaction(sig: c_int, act: *const SigAction, old: *mut SigAction) -> c_int;
+        fn signal(sig: c_int, handler: usize) -> usize;
+    }
+
+    /// struct sigaction of <sys/signal.h> as the kernel takes it (handler, mask, flags)
+    #[repr(C)]
+    struct SigAction {
+        handler: usize,
+        mask: u32,
+        flags: c_int,
+    }
+
+    const SIG_DFL: usize = 0;
+    const SIG_IGN: usize = 1;
+    /// SIGHUP, SIGINT, SIGQUIT, SIGTERM: what ends a program when it is asked to end
+    const ENDING: [c_int; 4] = [1, 2, 3, 15];
+
+    /// The ending signals this process ignores, set to their default -> which (bit n: signal
+    /// n), for signals_restore.  A child takes ignored signals over -- posix_spawn resets only
+    /// the ones it is told to, JFLib's only SIGPIPE --, and the app ignores SIGTERM (it hears
+    /// it through a dispatch source instead).  A job that ignored it could not be ended with
+    /// it, nor could what it starts.
+    pub fn signals_default() -> u32 {
+        let mut set = 0u32;
+        for sig in ENDING {
+            let mut old = SigAction { handler: 0, mask: 0, flags: 0 };
+            // SAFETY: a query (no new action) into a record of the kernel's layout.
+            let ignored = unsafe { sigaction(sig, core::ptr::null(), &mut old) } == 0 && old.handler == SIG_IGN;
+            if ignored {
+                // SAFETY: the default action for a valid signal number.
+                unsafe { signal(sig, SIG_DFL) };
+                set |= 1 << sig;
+            }
+        }
+        set
+    }
+
+    /// ignore again what signals_default set to its default
+    pub fn signals_restore(set: u32) {
+        for sig in ENDING {
+            if set & (1 << sig) != 0 {
+                // SAFETY: SIG_IGN for a valid signal number.
+                unsafe { signal(sig, SIG_IGN) };
+            }
+        }
     }
 
     pub fn affinity() -> u64 {
@@ -327,6 +374,45 @@ mod imp {
     const SYS_SETPRIORITY: usize = 141;
     #[cfg(target_arch = "aarch64")]
     const SYS_SETPRIORITY: usize = 140;
+
+    /// SIGHUP, SIGINT, SIGQUIT, SIGTERM: what ends a program when it is asked to end
+    const ENDING: [usize; 4] = [1, 2, 3, 15];
+
+    /// the handler of a signal (0: default, 1: ignored), from the kernel's sigaction record
+    /// (handler, flags, restorer, mask: four words on x86_64 and aarch64)
+    fn handler(sig: usize) -> Option<usize> {
+        let mut old = [0usize; 4];
+        // SAFETY: a query (no new action) into a buffer of the kernel's record size.
+        (unsafe { rt::os::syscall6(rt::os::SYS_RT_SIGACTION, sig, 0, old.as_mut_ptr() as usize, 8, 0, 0) } == 0).then_some(old[0])
+    }
+
+    fn set_handler(sig: usize, h: usize) {
+        let act = [h, 0usize, 0, 0];
+        // SAFETY: SIG_DFL or SIG_IGN (no handler code, so no restorer) for a valid signal.
+        unsafe { rt::os::syscall6(rt::os::SYS_RT_SIGACTION, sig, act.as_ptr() as usize, 0, 8, 0, 0) };
+    }
+
+    /// The ending signals this process ignores, set to their default -> which: a worker
+    /// started with nohup (SIGHUP ignored), or by anything that ignores SIGTERM, would hand
+    /// that on to every job (fork and exec keep what is ignored).
+    pub fn signals_default() -> u32 {
+        let mut set = 0u32;
+        for sig in ENDING {
+            if handler(sig) == Some(1) {
+                set_handler(sig, 0);
+                set |= 1 << sig;
+            }
+        }
+        set
+    }
+
+    pub fn signals_restore(set: u32) {
+        for sig in ENDING {
+            if set & (1 << sig) != 0 {
+                set_handler(sig, 1);
+            }
+        }
+    }
 
     /// a file of /proc: its size is unknown before it is read
     pub fn read_proc(path: &str) -> Option<Vec<u8>> {
@@ -462,6 +548,23 @@ pub fn processes() -> Vec<ProcInfo> {
 /// the resident memory of one process in bytes (0: gone, or not allowed to ask)
 pub fn rss(pid: u32) -> u64 {
     imp::rss(pid)
+}
+
+/// The ending signals (SIGHUP, SIGINT, SIGQUIT, SIGTERM) this process ignores, at their
+/// default until signals_restore -- for the moment a child is started, which would take them
+/// over ignored.  Windows has no such thing (0).
+pub fn signals_default() -> u32 {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    return imp::signals_default();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    0
+}
+
+pub fn signals_restore(set: u32) {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    imp::signals_restore(set);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let _ = set;
 }
 
 /// the ids of the processes this process started and that still run

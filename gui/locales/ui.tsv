@@ -244,3 +244,12 @@ Aufträge dürfen Programme starten, die nach ihnen weiterlaufen (bb run --leave
 leicht, neben den anderen	light, beside the others
 Nicht angeschlossen	Not plugged in
 Dieses Laufwerk ist gerade nicht eingehängt.	This drive is not mounted right now.
+verleiht in einem anderen Fenster	lends in another window
+nicht mehr gekoppelt	no longer paired
+Ein anderer Worker verleiht schon	Another worker lends already
+Auf diesem Gerät läuft bereits ein Worker – im Fenster der Installationszeile, mit bb-worker run oder als Dienst. Er verleiht, und was hier eingestellt wird, gilt auch für ihn. Sobald er beendet ist, übernimmt die App von selbst.	A worker already runs on this machine – in the install line's window, with bb-worker run, or as the service. It lends, and what is set here applies to it as well. As soon as it ends, the app takes over by itself.
+Nicht mehr gekoppelt	No longer paired
+Das Relay lässt dieses Gerät nicht mehr zu: Es wurde am Hauptgerät entfernt oder anderswo neu gekoppelt. Am Hauptgerät mit „Gerät hinzufügen“ einen neuen Code holen und hier neu koppeln.	The relay no longer admits this machine: it was removed on the main machine, or paired anew elsewhere. Get a new code on the main machine with "Add a machine" and pair here again.
+Neu koppeln …	Pair again …
+Übernommen	Taken over
+Der andere Worker ist beendet: die App verleiht jetzt selbst.	The other worker has ended: the app lends from now on.

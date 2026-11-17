@@ -92,6 +92,10 @@ record! {
         pub sync_files: u64,
         pub sync_bytes: u64,
         pub artifacts: TreeRef,
+        /// what `bb run` said of the outputs, for whoever waits for the job later: leave them
+        /// at the relay (--no-fetch), or write them to this folder (--to; "": the project)
+        pub no_fetch: bool,
+        pub fetch_to: String,
         /// the outputs were written to this folder ("" = not fetched yet)
         pub fetched_to: String,
         pub fetched_files: u64,
@@ -108,6 +112,13 @@ pub fn config_dir(cli_value: Option<&str>) -> String {
     below(&base, "buildbalancer")
 }
 
+/// A settings file of the main machine that is there but cannot be read -> what to say: an
+/// unreadable list is not an empty one, and settings that do not open are no machine that
+/// was never set up.
+pub fn read_problem(dir: &str) -> Option<String> {
+    ["main.json", "workers.json"].iter().find_map(|f| bb_core::util::unreadable(&plat::fs::join(dir, f)))
+}
+
 /// everything a command needs to talk to the fleet
 pub struct Ctx {
     pub dir: String,
@@ -120,6 +131,9 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn load(dir: &str) -> Result<Ctx, String> {
+        if let Some(why) = read_problem(dir) {
+            return Err(why);
+        }
         let main = bb_core::j::load::<MainConfig>(&plat::fs::join(dir, "main.json")).filter(|m| !m.id.is_empty()).ok_or_else(|| {
             String::from("this machine is not set up yet.  Start bb-relay on a machine every device can reach; it prints the line to run here:  bb setup RELAY KEY")
         })?;

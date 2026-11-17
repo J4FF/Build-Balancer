@@ -274,8 +274,13 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     ui.box_begin(0, BOX_V, 0);
     ui.page_header(&cfg.name, &tf("verleiht Leistung an „{}“", &[&cfg.main_name]));
     ui.box_end();
-    let (kind, label) = if g.lend == 0 {
+    let unpaired = !g.demo && g.engine.as_ref().is_some_and(|e| e.unpaired());
+    let (kind, label) = if g.engine_busy {
+        (BADGE_INFO, t("verleiht in einem anderen Fenster"))
+    } else if g.lend == 0 {
         (BADGE_NEUTRAL, t("angehalten"))
+    } else if unpaired {
+        (BADGE_CRIT, t("nicht mehr gekoppelt"))
     } else if online {
         (BADGE_OK, t("verbunden"))
     } else {
@@ -290,6 +295,35 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     ui.spacer(12);
     if !g.engine_error.is_empty() && ui.infobar(id::WORKER + 2, IB_ERROR, t("Der Worker läuft nicht"), &g.engine_error.clone()) & EV_ACT != 0 {
         g.engine_error.clear();
+    }
+    if g.engine_busy {
+        ui.infobar(
+            id::WORKER + 3,
+            IB_INFO,
+            t("Ein anderer Worker verleiht schon"),
+            t("Auf diesem Gerät läuft bereits ein Worker – im Fenster der Installationszeile, mit bb-worker run oder als Dienst. Er verleiht, und was hier eingestellt wird, gilt auch für ihn. Sobald er beendet ist, übernimmt die App von selbst."),
+        );
+    }
+    if unpaired {
+        ui.infobar(
+            id::WORKER + 4,
+            IB_ERROR,
+            t("Nicht mehr gekoppelt"),
+            t("Das Relay lässt dieses Gerät nicht mehr zu: Es wurde am Hauptgerät entfernt oder anderswo neu gekoppelt. Am Hauptgerät mit „Gerät hinzufügen“ einen neuen Code holen und hier neu koppeln."),
+        );
+        ui.box_begin(0, BOX_H, 0);
+        if ui.accent_button(id::WORKER + 5, t("Neu koppeln …")) & EV_ACT != 0 {
+            g.set_lending(false);
+            g.role = 0;
+            g.go(Page::Connect);
+        }
+        ui.box_end();
+    } else if g.lend != 0 && !online && !g.demo {
+        // why the relay is not there, as the worker sees it
+        let why = g.engine.as_ref().map(|e| e.relay_error()).unwrap_or_default();
+        if !why.is_empty() {
+            ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, &why);
+        }
     }
 
     // what is lent
