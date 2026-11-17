@@ -198,10 +198,18 @@ pub fn program_file(name: &str, exe: &str) -> Option<String> {
 }
 
 /// Whether the file a service starts is a copy of the program (Windows) that is not the
-/// program as it is now: an update replaced the one and not the other.
+/// program as it is now: an update replaced the one and not the other -- or the copy is gone
+/// and the one from before still lies beside it, which a replacing that was cut short leaves.
+/// refresh_program sets both right.
 pub fn program_stale(name: &str, exe: &str) -> bool {
     let Some(place) = program_file(name, exe) else { return false };
-    place != exe && plat::file_exists(&place) != 0 && plat::read_file(exe).is_some_and(|new| plat::read_file(&place).is_none_or(|old| old != new))
+    if place == exe {
+        return false;
+    }
+    if plat::file_exists(&place) == 0 {
+        return plat::file_exists(&format!("{}.old", place)) != 0;
+    }
+    plat::read_file(exe).is_some_and(|new| plat::read_file(&place).is_none_or(|old| old != new))
 }
 
 /// After the programs were replaced: make the file the service starts the new program, too.
@@ -216,12 +224,17 @@ pub fn refresh_program(name: &str, exe: &str) -> Result<(), String> {
         return Ok(());
     }
     let aside = format!("{}.old", place);
-    // (a replacing that was cut short left the copy under its other name: back with it first)
-    if plat::file_exists(&place) == 0 && plat::file_exists(&aside) != 0 {
-        plat::rename(&aside, &place);
-    }
     if plat::file_exists(&place) == 0 {
-        return Ok(());
+        // no copy there and none kept: this service has no file of its own
+        if plat::file_exists(&aside) == 0 {
+            return Ok(());
+        }
+        // A replacing that was cut short left the copy under its other name: back with it
+        // first.  A service without its program does not start, so this may not fail unsaid.
+        need_admin()?;
+        if !plat::rename(&aside, &place) {
+            return Err(format!("the service's program, {}, is missing, and the copy kept beside it ({}) could not be put back", place, aside));
+        }
     }
     let new = plat::read_file(exe).ok_or_else(|| format!("{} cannot be read", exe))?;
     if plat::read_file(&place).is_some_and(|old| old == new) {
