@@ -35,6 +35,101 @@ pub enum Page {
 
 type Outcome<T> = Option<Task<Result<T, String>>>;
 
+/// what another machine lends, as the sliders of its card on the machines page say
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OfferValues {
+    pub cpu: i32,
+    /// in half GiB
+    pub ram: i32,
+    /// GiB in each place of OfferEdit::paths (0: nothing)
+    pub disk: Vec<i32>,
+    pub jobs: i32,
+    /// jobs run with low priority
+    pub low: i32,
+}
+
+/// a worker's lending being changed on the machines page
+#[derive(Clone, Debug, Default)]
+pub struct OfferEdit {
+    pub worker: String,
+    /// its places that are there ("": the data folder), and how far each slider goes (GiB)
+    pub paths: Vec<String>,
+    pub max: Vec<i32>,
+    /// what the projects take in each
+    pub used: Vec<u64>,
+    pub free: Vec<u64>,
+    /// as it lent when the card was opened, and as the sliders say now: only what was moved
+    /// is sent (anything else may have been changed on the machine itself meanwhile)
+    pub start: OfferValues,
+    pub now: OfferValues,
+}
+
+/// half a GiB, the step of the memory sliders
+pub const HALF_GIB: u64 = 1 << 29;
+
+impl OfferEdit {
+    pub fn new(worker: &str, s: &WorkerStatus) -> OfferEdit {
+        let there: Vec<&proto::DriveOffer> = s.drives.iter().filter(|d| d.there).collect();
+        let v = OfferValues {
+            cpu: s.offer.cpu.max(1) as i32,
+            ram: ((s.offer.ram / HALF_GIB) as i32).max(1),
+            disk: there.iter().map(|d| (d.lent >> 30) as i32).collect(),
+            jobs: s.offer.jobs.max(1) as i32,
+            low: (s.priority != "normal") as i32,
+        };
+        OfferEdit {
+            worker: String::from(worker),
+            paths: there.iter().map(|d| d.path.clone()).collect(),
+            // up to what is free there plus what the projects take already
+            max: there.iter().map(|d| (((d.free + d.used) >> 30) as i32).max((d.lent >> 30) as i32).max(1)).collect(),
+            used: there.iter().map(|d| d.used).collect(),
+            free: there.iter().map(|d| d.free).collect(),
+            start: v.clone(),
+            now: v,
+        }
+    }
+
+    /// what was moved, as the worker's order takes it
+    pub fn change(&self) -> proto::OfferChange {
+        let (a, b) = (&self.start, &self.now);
+        let mut c = proto::OfferChange::default();
+        if a.cpu != b.cpu {
+            c.cpu = format!("{}", b.cpu);
+        }
+        if a.ram != b.ram {
+            c.ram = format!("{}", b.ram as u64 * HALF_GIB);
+        }
+        for (i, path) in self.paths.iter().enumerate() {
+            if a.disk[i] == b.disk[i] {
+                continue;
+            }
+            let bytes = if b.disk[i] == 0 { String::from("off") } else { format!("{}", (b.disk[i] as u64) << 30) };
+            if path.is_empty() {
+                // (the data folder: 0 lends nothing there)
+                c.disk = if b.disk[i] == 0 { String::from("0") } else { bytes };
+            } else {
+                c.stores.push(format!("{}={}", path, bytes));
+            }
+        }
+        if a.jobs != b.jobs {
+            c.jobs = format!("{}", b.jobs);
+        }
+        if a.low != b.low {
+            c.priority = String::from(if b.low != 0 { "low" } else { "normal" });
+        }
+        c
+    }
+}
+
+/// a change sent to a worker that has not said yet whether it took it
+pub struct OfferSent {
+    pub worker: String,
+    pub name: String,
+    pub change: String,
+    /// when to stop waiting for its answer (tick_ms)
+    pub until: u64,
+}
+
 pub struct Gui {
     pub demo: bool,
     pub main_dir: String,
@@ -110,6 +205,12 @@ pub struct Gui {
     pub act_task: Outcome<String>,
     pub ask_unpair: Shared<i32>,
     pub unpair_name: String,
+    /// what another machine lends, being changed in its card
+    pub offer_edit: Option<OfferEdit>,
+    offer_task: Outcome<OfferSent>,
+    pub offer_sent: Vec<OfferSent>,
+    /// the last change of the main machine's this machine's worker told of (id, error)
+    offer_told: (String, String),
 
     pub jobs: Vec<JobRec>,
     jobs_task: Outcome<(Vec<JobRec>, String)>,
@@ -183,6 +284,10 @@ impl Gui {
             act_task: None,
             ask_unpair: Shared::new(0),
             unpair_name: String::new(),
+            offer_edit: None,
+            offer_task: None,
+            offer_sent: Vec::new(),
+            offer_told: (String::new(), String::new()),
             jobs: Vec::new(),
             jobs_task: None,
             job_sel: String::new(),
@@ -567,6 +672,65 @@ impl Gui {
         self.act_task = Some(ui.spawn(spawn_blocking(move || f(&mut Ctx::load(&dir)?))));
     }
 
+    /// Send what the sliders of a worker's card say.  Its next status tells whether it took it
+    /// (poll_tasks); the card waits for that.
+    /// (`worker` comes from the card: while the machines page is drawn, its cards hold the fleet)
+    pub fn send_offer(&mut self, ui: &mut Ui, worker: PairedWorker) {
+        let Some(e) = self.offer_edit.clone().filter(|e| e.worker == worker.id) else { return };
+        if !e.now.disk.is_empty() && e.now.disk.iter().all(|d| *d == 0) {
+            ui.toast(IB_WARNING, t("Nicht möglich"), t("Mindestens ein Laufwerk muss Platz für Projekte hergeben."), 0);
+            return;
+        }
+        let mut change = e.change();
+        self.offer_edit = None;
+        if change.is_empty() {
+            return;
+        }
+        if self.demo {
+            ui.toast(IB_INFO, t("Demo"), t("In der Demo wird nichts verändert."), 0);
+            return;
+        }
+        if self.offer_task.is_some() {
+            return;
+        }
+        let dir = self.main_dir.clone();
+        self.offer_task = Some(ui.spawn(spawn_blocking(move || {
+            let id = ops::set_offer(&Ctx::load(&dir)?, &worker, &mut change)?;
+            // (an answer comes within seconds; one that is offline gets a minute to come back)
+            Ok(OfferSent { worker: worker.id.clone(), name: worker.name.clone(), change: id, until: bb_core::util::tick_ms() + 60_000 })
+        })));
+    }
+
+    /// whether a change sent to this worker waits for its answer
+    pub fn offer_waits(&self, worker: &str) -> bool {
+        self.offer_task.is_some() || self.offer_sent.iter().any(|s| s.worker == worker)
+    }
+
+    /// the changes the workers answered, as the fleet just loaded says
+    fn offer_answers(&mut self, ui: &mut Ui) {
+        let now = bb_core::util::tick_ms();
+        let fleet = &self.fleet;
+        self.offer_sent.retain(|sent| {
+            let status = fleet.iter().find(|v| v.paired.id == sent.worker).and_then(|v| v.status.as_ref());
+            match status.filter(|s| s.offer_change == sent.change) {
+                Some(s) if s.offer_error.is_empty() => {
+                    let what = tf("{} Prozessoren, {} RAM, {} für Projekte", &[&format!("{}", s.offer.cpu), &size_text(s.offer.ram), &size_text(s.offer.disk)]);
+                    ui.toast(IB_SUCCESS, &tf("{} verleiht jetzt", &[&sent.name]), &what, 0);
+                    false
+                }
+                Some(s) => {
+                    ui.toast(IB_ERROR, &tf("{} hat die Änderung nicht übernommen", &[&sent.name]), &s.offer_error, 12_000);
+                    false
+                }
+                None if now >= sent.until => {
+                    ui.toast(IB_INFO, &tf("{} hat noch nicht geantwortet", &[&sent.name]), t("Es übernimmt die Änderung, sobald es wieder online ist."), 0);
+                    false
+                }
+                None => true,
+            }
+        });
+    }
+
     pub fn select_job(&mut self, ui: &mut Ui, id: &str) {
         self.job_sel = String::from(id);
         self.job_log.clear();
@@ -702,7 +866,28 @@ impl Gui {
                 self.wcfg = Some(c);
             }
         }
+        // the main machine changed what this machine lends: the sliders follow (above), and a
+        // note says who moved them
+        if let Some(e) = &self.engine {
+            let reply = e.w.offer_reply.lock().clone();
+            // (an engine started anew has told of none)
+            if reply != self.offer_told && !reply.0.is_empty() {
+                let main = self.wcfg.as_ref().map(|c| c.main_name.clone()).unwrap_or_default();
+                if reply.1.is_empty() {
+                    ui.toast(IB_INFO, t("Vom Hauptgerät geändert"), &tf("„{}“ hat eingestellt, was dieses Gerät verleiht.", &[&main]), 0);
+                    // (the sliders show it now, not with the next look at the file)
+                    if let Some(c) = config::load(&self.worker_dir).filter(|_| !self.offer_dirty) {
+                        self.wcfg = Some(c);
+                    }
+                } else {
+                    ui.toast(IB_WARNING, t("Änderung des Hauptgeräts nicht übernommen"), &reply.1, 12_000);
+                }
+                self.offer_told = reply;
+            }
+        }
         match self.page {
+            // (a change sent to a worker: its answer is looked for every other second)
+            _ if !self.offer_sent.is_empty() && self.ticks % 2 == 1 => self.refresh_fleet(ui),
             Page::Fleet | Page::Project if self.ticks % 4 == 1 => self.refresh_fleet(ui),
             Page::Jobs if self.ticks % 2 == 1 => self.refresh_jobs(ui),
             _ => {}
@@ -832,6 +1017,19 @@ impl Gui {
                     self.fleet_error.clear();
                 }
                 Err(e) => self.fleet_error = e,
+            }
+            self.offer_answers(ui);
+        }
+        if let Some(r) = done(&mut self.offer_task) {
+            match r {
+                Ok(sent) => {
+                    self.offer_sent.retain(|s| s.worker != sent.worker);
+                    self.offer_sent.push(sent);
+                    self.refresh_fleet(ui);
+                }
+                Err(e) => {
+                    ui.toast(IB_ERROR, t("Nicht geschickt"), &e, 12_000);
+                }
             }
         }
         if let Some(r) = done(&mut self.pair_begin) {

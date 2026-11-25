@@ -353,6 +353,10 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     let leave0 = c.leave_running as i32;
     let mut leave = leave0;
     changed |= ui.switch(id::WORKER + 17, t("Aufträge dürfen Programme starten, die nach ihnen weiterlaufen (bb run --leave-running)"), &mut leave) << 1;
+    // whether the main machine may move these sliders from there (bb limits, its machines page)
+    let main0 = (!c.offer_locked) as i32;
+    let mut main_sets = main0;
+    changed |= ui.switch(id::WORKER + 18, &tf("„{}“ darf von dort aus einstellen, was dieses Gerät verleiht", &[&c.main_name]), &mut main_sets) << 1;
     ui.box_begin(0, BOX_H | BOX_XCENTER, 8);
     let (mut jobs, mut keep) = (c.jobs.max(1) as i32, c.keep_days as i32);
     let (jobs0, keep0) = (jobs, keep);
@@ -375,6 +379,9 @@ pub fn worker(g: &mut Gui, ui: &mut Ui) {
     }
     if leave != leave0 {
         c.leave_running = leave != 0;
+    }
+    if main_sets != main0 {
+        c.offer_locked = main_sets == 0;
     }
     if jobs != jobs0 {
         c.jobs = jobs as u32;
@@ -681,7 +688,29 @@ fn worker_card(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView) {
     } else if v.admitted {
         ui.text(TS_BODY | TX_SECONDARY, t("Hat sich noch nicht gemeldet: läuft Build Balancer dort, und ist „Leistung verleihen“ eingeschaltet?"));
     }
-    ui.box_begin(0, BOX_H | BOX_END, 0);
+    // what it lends, set from here
+    let editing = g.offer_edit.as_ref().is_some_and(|e| e.worker == v.paired.id);
+    if let (true, Some(s)) = (editing, &v.status) {
+        offer_editor(g, ui, base, v, s);
+    }
+    ui.box_begin(0, BOX_H | BOX_END | BOX_XCENTER, 8);
+    if g.offer_waits(&v.paired.id) {
+        busy_row(ui, base + 60, t("Wird übernommen …"));
+    } else if let (false, Some(s)) = (editing, v.status.as_ref().filter(|_| v.admitted)) {
+        let settable = s.offer_settable();
+        ui.next_flags(ST_COMPACT | if settable { 0 } else { ST_DISABLED });
+        ui.next_icon(if s.offer_locked { IC_LOCK } else { IC_EDIT });
+        if ui.button(base + 58, t("Freigabe einstellen …")) & EV_ACT != 0 && settable {
+            g.offer_edit = Some(state::OfferEdit::new(&v.paired.id, s));
+        }
+        if s.drives.is_empty() {
+            ui.tooltip(t("Erst ab Version 0.1.7: vorher dort das Update einspielen."));
+        } else if s.offer_locked {
+            ui.tooltip(t("Was dieses Gerät verleiht, stellt sein Besitzer dort selbst ein."));
+        } else if !v.online {
+            ui.tooltip(t("Das Gerät ist offline: es übernimmt die Änderung, sobald es wieder da ist."));
+        }
+    }
     ui.next_flags(ST_SUBTLE | ST_COMPACT);
     if ui.button(base + 40, t("Entkoppeln …")) & EV_ACT != 0 {
         g.unpair_name = v.paired.name.clone();
@@ -690,6 +719,65 @@ fn worker_card(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView) {
     ui.box_end();
     ui.box_end();
     ui.spacer(12);
+}
+
+/// The sliders of what another machine lends, in its card: processors, memory, each place for
+/// projects, jobs at once, priority.  Only what is moved is sent; the machine checks it as its
+/// own settings and says whether it took it.  (ids: base + 42 .. 57, 59, 61, 62)
+fn offer_editor(g: &mut Gui, ui: &mut Ui, base: u32, v: &WorkerView, s: &WorkerStatus) {
+    let Some(mut e) = g.offer_edit.take() else { return };
+    let n = |x: i32| format!("{}", x);
+    ui.spacer(4);
+    ui.text(TS_BODY_STRONG, t("Was dieses Gerät verleiht"));
+    ui.gridbox_begin(base + 42, &[190, -1, 230], 0, 10);
+    ui.text(TS_BODY, t("Prozessoren"));
+    ui.slider(base + 43, &mut e.now.cpu, &Range::new(1, s.cpu_total.max(1) as i32, 1, RG_TIP));
+    ui.text(TS_BODY | TX_SECONDARY, &tf("{} von {}", &[&n(e.now.cpu), &n(s.cpu_total as i32)]));
+    ui.text(TS_BODY, t("Arbeitsspeicher"));
+    ui.slider(base + 44, &mut e.now.ram, &Range::new(1, ((s.ram_total / state::HALF_GIB) as i32).max(1), 1, 0));
+    // (unmoved, it shows what is lent exactly: a value set elsewhere need not be a step of the slider)
+    let ram = if e.now.ram == e.start.ram { s.offer.ram } else { e.now.ram as u64 * state::HALF_GIB };
+    ui.text(TS_BODY | TX_SECONDARY, &tf("{} von {}", &[&size_text(ram), &size_text(s.ram_total)]));
+    for (i, path) in e.paths.iter().enumerate().take(12) {
+        let label = if path.is_empty() { String::from(t("Im Datenordner")) } else { drive_label(path) };
+        ui.text(TS_BODY | TX_ELLIPSIS, &label);
+        ui.slider(base + 45 + i as u32, &mut e.now.disk[i], &Range::new(0, e.max[i], 1, 0));
+        let gib = e.now.disk[i];
+        let text = if gib == 0 && e.start.disk[i] > 0 && e.used[i] > 0 {
+            String::from(t("aus – was dort liegt, wird entfernt"))
+        } else if gib == 0 {
+            String::from(t("nichts"))
+        } else {
+            tf("{} für Projekte · {} frei", &[&size_text((gib as u64) << 30), &size_text(e.free[i])])
+        };
+        ui.text(TS_BODY | TX_SECONDARY, &text);
+    }
+    ui.gridbox_end();
+    ui.box_begin(0, BOX_H | BOX_XCENTER, 8);
+    ui.text(TS_BODY, t("Aufträge gleichzeitig"));
+    ui.next_size(110, 0);
+    ui.number_box(base + 57, &mut e.now.jobs, &Range::new(1, 16, 1, 0));
+    ui.spacer(16);
+    ui.switch(base + 59, t("Rücksicht nehmen: niedrige Priorität"), &mut e.now.low);
+    ui.box_end();
+    ui.box_begin(0, BOX_H | BOX_END | BOX_XCENTER, 8);
+    let (mut send, mut close) = (false, false);
+    if ui.button(base + 62, t("Abbrechen")) & EV_ACT != 0 {
+        close = true;
+    }
+    if e.now == e.start {
+        ui.next_flags(ST_DISABLED);
+    }
+    if ui.accent_button(base + 61, t("Übernehmen")) & EV_ACT != 0 && e.now != e.start {
+        send = true;
+    }
+    ui.box_end();
+    if !close {
+        g.offer_edit = Some(e);
+    }
+    if send {
+        g.send_offer(ui, v.paired.clone());
+    }
 }
 
 // ------------------------------------------------------------------------- jobs
@@ -1000,7 +1088,12 @@ pub fn settings(g: &mut Gui, ui: &mut Ui) {
     if ui.switch(id::SETTINGS + 5, t("Beim Start nach Updates suchen"), &mut auto) & EV_ACT != 0 {
         g.set_update_auto(auto != 0);
     }
-    let dir = bb_update::own_dir().unwrap_or_default();
+    // (the demo makes the README's pictures: a made-up place, not the folder it was built in)
+    let dir = if g.demo {
+        String::from(if cfg!(windows) { "C:\\Users\\me\\AppData\\Local\\Programs\\BuildBalancer" } else { "/home/me/.local/bin" })
+    } else {
+        bb_update::own_dir().unwrap_or_default()
+    };
     ui.text(TS_CAPTION | TX_SECONDARY | TX_WRAP, &tf("Neue Versionen kommen von {} und werden vor dem Einspielen gegen ihre Prüfsumme geprüft. Die Programme liegen in {}.", &[&format!("{}/releases", bb_core::REPOSITORY), &dir]));
     card_end(ui);
 
@@ -1067,6 +1160,9 @@ fn demo_status(name: &str, os: &str, cpu: (u32, u32, u32), ram_gib: (u64, u64), 
         cpu_reserved: cpu.1 - cpu.0,
         disk_used: disk_gib.0 << 30,
         tools: state::tools(tool_names),
+        priority: String::from("low"),
+        // (the data folder only; a drive of its own is added where it has one)
+        drives: alloc::vec![proto::DriveOffer { path: String::new(), lent: disk_gib.1 << 30, used: disk_gib.0 << 30, free: 182 << 30, total: 476 << 30, there: true }],
         ..WorkerStatus::default()
     };
     s.ram_used = (ram_gib.1 - ram_gib.0) << 30;
@@ -1075,6 +1171,8 @@ fn demo_status(name: &str, os: &str, cpu: (u32, u32, u32), ram_gib: (u64, u64), 
 
 pub fn demo(g: &mut Gui) {
     g.page = Page::Worker;
+    // (the pictures of the README come from here: nothing of the machine they are taken on)
+    g.f_name = String::from("laptop");
     // a newer version, so the settings show what they are for
     g.upd_found = Some(bb_update::Check { current: String::from(bb_core::VERSION), latest: String::from("0.2.0"), newer: true });
     g.lend = 1;
@@ -1099,6 +1197,8 @@ pub fn demo(g: &mut Gui) {
     g.place_used = alloc::vec![(String::new(), 8 << 30), (String::from("/media/laptop/Extern"), 3 << 30)];
     let mut me = demo_status("laptop", "linux", (2, 6, 8), (8, 12), (11, 40), &["cargo", "rustc", "gcc", "g++", "clang", "cmake", "make", "python3", "git"]);
     me.running = alloc::vec![state::brief("j-k7m2x9pq4d", "kritzel", proto::ST_RUNNING, 4, "cargo build --release")];
+    me.drives.push(proto::DriveOffer { path: String::from("/media/laptop/Extern"), lent: 200 << 30, used: 3 << 30, free: 1700 << 30, total: 1863 << 30, there: true });
+    me.offer.disk += 200 << 30;
     g.wstatus = Some(me.clone());
     let ws = alloc::vec![state::workspace("p-kritzel0001", "kritzel", 68, 0), state::workspace("p-jfword00001", "jfWord", 31, 3), state::workspace("p-altesdemo01", "netzlabor-alt", 12, 12)];
     g.projects = cleanup::group(&ws);
@@ -1108,6 +1208,9 @@ pub fn demo(g: &mut Gui) {
     let paired = |name: &str, os: &str| PairedWorker { id: format!("w-{}", name), name: String::from(name), os: String::from(os), arch: String::from("x86_64"), host: String::from(name), ..PairedWorker::default() };
     let mut tower = demo_status("tower", "windows", (8, 8, 12), (16, 16), (3, 60), &["cargo", "rustc", "cl", "msbuild", "cmake", "python", "node", "npm", "git"]);
     tower.workspaces = alloc::vec![state::workspace("p-kritzel0001", "kritzel", 29, 1)];
+    tower.ram_total = 32 << 30;
+    tower.drives.push(proto::DriveOffer { path: String::from("E:/"), lent: 100 << 30, used: 0, free: 812 << 30, total: 931 << 30, there: true });
+    tower.offer.disk += 100 << 30;
     g.fleet = alloc::vec![
         WorkerView { paired: paired("laptop", "linux"), admitted: true, online: true, idle_secs: 2, status: Some(me) },
         WorkerView { paired: paired("tower", "windows"), admitted: true, online: true, idle_secs: 4, status: Some(tower) },

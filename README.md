@@ -132,7 +132,8 @@ sudo bb-worker service install      # Linux, macOS;  Windows: in a terminal run 
 
 On Linux the service runs **as you**, not as root: jobs get your rights, your pairing and
 your PATH (so `~/.cargo/bin` and the like are found). How much of a PC may be used is set
-with the sliders on that PC (page **This machine**) or with `bb-worker config`.
+with the sliders on that PC (page **This machine**) or with `bb-worker config` -- or from the
+main machine: **Set what it lends** in that PC's card under **Machines**, or `bb limits NAME`.
 
 ### Install what your builds need
 
@@ -240,7 +241,7 @@ the next job sends the project again. **Unpair and remove everything** leaves th
 if Build Balancer had never run on it.
 
 **On the main machine** the app shows the workers with what they lend and do (**Machines**,
-also with a **Remove** per project and worker), the jobs with their output (**Jobs**), and
+also with a **Remove** per project and worker, and **Set what it lends** for each), the jobs with their output (**Jobs**), and
 runs a project's tasks or a command (**Project**). It works on the same files as `bb`, so
 jobs an agent starts through `bb` show up in the window too.
 
@@ -358,6 +359,29 @@ A running worker takes changes over within seconds. Shares work too: `--cpu 50%`
 `--ram 50%`, `--disk 50%` (of the free space), `--store E:=50%` (of that drive's). On a drive
 the worker keeps its projects in `BuildBalancer/<worker id>/`; a drive that is not plugged in
 is passed over until it is back.
+
+### Set from the main machine
+
+Nobody has to walk over to change what a machine lends. In the app, **Set what it lends** in
+a machine's card under **Machines** opens its sliders: processors, memory, the room for
+projects on each of its drives, jobs at once, priority. **Apply** sends what was moved.
+
+![A machine's card on the main machine with its sliders: processors, memory, the data folder, another drive, jobs at once and priority](docs/img/machine-offer.png)
+
+```sh
+bb limits tower                                  # what "tower" lends, drive by drive
+bb limits tower --cpu 8 --ram 16G --jobs 2       # change it from here
+bb limits tower --store E:=200G --disk 0         # its projects on its drive E: only
+bb limits tower --priority normal --cpu 75%      # shares are of that machine's own
+```
+
+The machine checks a change as `bb-worker config` there would, and `bb limits` waits for its
+answer: what it lends now, or why it did not take it (in the app: a note). One that is
+offline takes the change when it is back; one that runs an older version than 0.1.7 needs the
+update first. The main machine sets the power that is lent, not what jobs may do there
+(`--leave-running` stays with the machine). Whoever sits at that machine can keep it all to
+themselves: the switch "... may set from there what this machine lends" on its page
+**This machine**, or `bb-worker config --main-may-set no`.
 
 | Limit | How it is held |
 | --- | --- |

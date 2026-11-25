@@ -253,3 +253,23 @@ Das Relay lässt dieses Gerät nicht mehr zu: Es wurde am Hauptgerät entfernt o
 Neu koppeln …	Pair again …
 Übernommen	Taken over
 Der andere Worker ist beendet: die App verleiht jetzt selbst.	The other worker has ended: the app lends from now on.
+„{}“ darf von dort aus einstellen, was dieses Gerät verleiht	“{}” may set from there what this machine lends
+Freigabe einstellen …	Set what it lends …
+Wird übernommen …	Being taken over …
+Erst ab Version 0.1.7: vorher dort das Update einspielen.	From version 0.1.7 on only: install the update there first.
+Was dieses Gerät verleiht, stellt sein Besitzer dort selbst ein.	What this machine lends is set by its owner there.
+Das Gerät ist offline: es übernimmt die Änderung, sobald es wieder da ist.	The machine is offline: it takes the change over as soon as it is back.
+aus – was dort liegt, wird entfernt	off – what lies there is removed
+nichts	nothing
+Rücksicht nehmen: niedrige Priorität	Be considerate: low priority
+Übernehmen	Apply
+{} Prozessoren, {} RAM, {} für Projekte	{} processors, {} memory, {} for projects
+{} verleiht jetzt	{} now lends
+{} hat die Änderung nicht übernommen	{} did not take the change
+{} hat noch nicht geantwortet	{} has not answered yet
+Es übernimmt die Änderung, sobald es wieder online ist.	It takes the change over as soon as it is online again.
+Vom Hauptgerät geändert	Changed by the main machine
+„{}“ hat eingestellt, was dieses Gerät verleiht.	“{}” set what this machine lends.
+Änderung des Hauptgeräts nicht übernommen	The main machine's change was not taken
+Nicht geschickt	Not sent
+Im Datenordner	In the data folder

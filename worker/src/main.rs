@@ -7,6 +7,7 @@
 //   bb-worker run                           lend, in this terminal
 //   bb-worker config [--cpu ..] [--ram ..] [--disk ..] [--jobs N] [--priority low|normal]
 //                    [--keep-days N] [--tags a,b] [--tools x,y] [--name NAME]      (no option: show)
+//                    [--main-may-set yes|no]   may the main machine change what is lent (bb limits)
 //   bb-worker status
 //   bb-worker tools                         the build tools jobs can use on this machine
 //   bb-worker clean [PROJECT | --all]       remove a project's files here (no argument: list them)
@@ -49,8 +50,8 @@ const SERVICE: &str = if cfg!(windows) {
 } else {
     "buildbalancer-worker"
 };
-const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--leave-running"];
-const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--leave-running", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root", "--check"];
+const VALUED: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--leave-running", "--main-may-set"];
+const KNOWN: &[&str] = &["--data", "--name", "--cpu", "--ram", "--disk", "--store", "--leave-running", "--main-may-set", "--jobs", "--priority", "--keep-days", "--tags", "--tools", "--user", "--force", "--service", "--all", "--purge", "--no-run", "--as-root", "--check"];
 
 fn fail(s: &str) -> i32 {
     plat::log_error("worker", s);
@@ -67,6 +68,7 @@ fn usage() -> i32 {
          \x20                                          --store /media/me/Stick=50%  (DRIVE=off gives it up;\n\
          \x20                                          --disk 0: nothing in the data folder itself)\n\
          \x20                [--leave-running yes|no]  may jobs start programs that go on after them\n\
+         \x20                [--main-may-set yes|no]   may the main machine set what is lent (bb limits; yes)\n\
          bb-worker status\n\
          bb-worker drives                   the drives projects can be kept on, with their free space\n\
          bb-worker tools                    the build tools jobs can use on this machine\n\

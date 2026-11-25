@@ -8,6 +8,7 @@
 //   Hello, Welcome  the two messages of a pairing, under the pairing code's key
 //   WorkerStatus    what a worker offers and does right now, to the main machine
 //   JobSpec         a job, main machine -> worker (the worker's inbox channel)
+//   OfferChange     what a worker is to lend from now on, main machine -> worker (its inbox)
 //   Event           what happens to a job, worker -> main machine (the job's channel)
 //
 // Channel names: "<worker id>/in" is a worker's inbox, "<main id>/job/<job id>" a job's
@@ -138,6 +139,49 @@ record! {
 }
 
 record! {
+    /// a place a worker keeps projects in, as its status tells the main machine
+    pub struct DriveOffer {
+        /// the drive (or folder) its owner named; "": the data folder
+        pub path: String,
+        /// bytes lent there (0: nothing new goes there)
+        pub lent: u64,
+        /// what the projects there take
+        pub used: u64,
+        /// its volume's free and total bytes (0 while it is not there)
+        pub free: u64,
+        pub total: u64,
+        /// plugged in (and mounted) right now
+        pub there: bool,
+    }
+}
+
+record! {
+    /// What a worker is to lend from now on, main machine -> worker (ORDER_OFFER): the power
+    /// it lends, not what jobs may do there.  Each value is written as `bb-worker config` takes
+    /// it ("8", "50%", "16G", "low"), and "" leaves it as it is.  The worker checks it as it
+    /// checks its own command line, and its status says whether it took it.
+    pub struct OfferChange {
+        /// names the change: the worker's status names the last one it handled
+        pub id: String,
+        pub cpu: String,
+        pub ram: String,
+        /// in the data folder
+        pub disk: String,
+        /// other drives: "PATH=SIZE", "PATH=off"
+        pub stores: Vec<String>,
+        pub jobs: String,
+        pub priority: String,
+    }
+}
+
+impl OfferChange {
+    /// whether it changes nothing
+    pub fn is_empty(&self) -> bool {
+        [&self.cpu, &self.ram, &self.disk, &self.jobs, &self.priority].iter().all(|v| v.trim().is_empty()) && self.stores.is_empty()
+    }
+}
+
+record! {
     /// what a worker is, offers and does right now
     pub struct WorkerStatus {
         pub time: i64,
@@ -169,6 +213,17 @@ record! {
         pub ram_used: u64,
         /// whether its owner lets jobs start programs that outlive them (bb run --leave-running)
         pub leave_running: bool,
+        /// "low": jobs run below the normal priority there, "normal" ("": a worker before 0.1.7)
+        pub priority: String,
+        /// every place projects are kept in, the data folder first.  A worker before 0.1.7
+        /// does not say (empty), and cannot be told to lend something else either.
+        pub drives: Vec<DriveOffer>,
+        /// only its owner there sets what it lends: a change of the main machine's is refused
+        pub offer_locked: bool,
+        /// the last change of the main machine's it handled (OfferChange::id), and why it did
+        /// not take it ("": it did)
+        pub offer_change: String,
+        pub offer_error: String,
         /// how each limit is held: "affinity", "job-object", "watchdog", "quota", "none"
         pub enforce_cpu: String,
         pub enforce_ram: String,
@@ -202,6 +257,12 @@ impl WorkerStatus {
 
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.iter().any(|t| t.name.eq_ignore_ascii_case(name))
+    }
+
+    /// whether the main machine can change what it lends: a worker that knows the order
+    /// (0.1.7 on), and whose owner lets it
+    pub fn offer_settable(&self) -> bool {
+        !self.drives.is_empty() && !self.offer_locked
     }
 }
 
@@ -311,6 +372,8 @@ pub const ORDER_CANCEL: &str = "job.cancel";
 pub const ORDER_WS_REMOVE: &str = "ws.remove";
 /// bring the worker's programs up to the newest release and start again (when nothing runs)
 pub const ORDER_UPDATE: &str = "update";
+/// lend something else: {"change": OfferChange} (where the worker's owner lets the main machine)
+pub const ORDER_OFFER: &str = "offer.set";
 
 /// a job's states, in the order it passes through them
 pub const ST_SUBMITTED: &str = "submitted"; // sent to the relay, the worker has not answered yet

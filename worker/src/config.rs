@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use agent_core::record;
 use bb_core::crypt::{DataKey, Keys};
-use bb_core::proto::Workspace;
+use bb_core::proto::{OfferChange, Workspace};
 use bb_core::util::{below, Cli};
 
 record! {
@@ -71,6 +71,9 @@ record! {
         pub keep_days: u32,
         /// jobs may start programs that outlive them (bb run --leave-running)
         pub leave_running: bool,
+        /// Only this machine sets what it lends: the main machine's changes (bb limits, the
+        /// app's machines page) are refused.  Off by default -- the machines are one owner's.
+        pub offer_locked: bool,
     }
 }
 
@@ -151,8 +154,9 @@ pub fn default_offer(dir: &str) -> (u32, u64, u64) {
     ((cpus * 3 / 4).max(1), plat::mem_total() / 2, (free / 2).min(50 << 30))
 }
 
-/// Apply --cpu / --ram / --disk / --jobs / --priority / --tags / --tools / --name of a command
-/// line to a config -> whether anything changed.
+/// Apply --cpu / --ram / --disk / --store / --jobs / --priority / --keep-days / --leave-running /
+/// --main-may-set / --tags / --tools / --name of a command line to a config -> whether
+/// anything changed.
 pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, String> {
     let before = c.clone();
     let cpus = plat::cpu_count() as u64;
@@ -205,11 +209,10 @@ pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, Strin
         c.keep_days = v.parse::<u32>().ok().filter(|n| *n <= 3650).ok_or("--keep-days takes a number of days (0: keep projects until they are removed by hand)")?;
     }
     if let Some(v) = cli.value("--leave-running") {
-        c.leave_running = match v.trim() {
-            "yes" | "on" | "true" | "1" => true,
-            "no" | "off" | "false" | "0" => false,
-            _ => return Err(String::from("--leave-running takes yes or no")),
-        };
+        c.leave_running = yes_no(v).ok_or("--leave-running takes yes or no")?;
+    }
+    if let Some(v) = cli.value("--main-may-set") {
+        c.offer_locked = !yes_no(v).ok_or("--main-may-set takes yes or no")?;
     }
     if let Some(v) = cli.value("--priority") {
         if v != "low" && v != "normal" {
@@ -233,6 +236,36 @@ pub fn apply_options(c: &mut Config, cli: &Cli, dir: &str) -> Result<bool, Strin
     Ok(*c != before)
 }
 
+fn yes_no(v: &str) -> Option<bool> {
+    match v.trim() {
+        "yes" | "on" | "true" | "1" => Some(true),
+        "no" | "off" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// A change of the main machine's as the options of `bb-worker config`, so it is checked as
+/// they are: the power lent -- processors, memory, disk, drives, jobs at once, priority.  Not
+/// what jobs may do here, the name, or whether the main machine may change it.
+pub fn change_options(ch: &OfferChange) -> Cli {
+    let mut cli = Cli::default();
+    for (name, v) in [("--cpu", &ch.cpu), ("--ram", &ch.ram), ("--disk", &ch.disk), ("--jobs", &ch.jobs), ("--priority", &ch.priority)] {
+        if !v.trim().is_empty() {
+            cli.opts.push((String::from(name), String::from(v.trim())));
+        }
+    }
+    for s in &ch.stores {
+        cli.opts.push((String::from("--store"), s.clone()));
+    }
+    cli
+}
+
+/// what is lent, in one line for the log
+pub fn offer_line(c: &Config) -> String {
+    let drives: String = c.stores.iter().map(|s| format!(", {} on {}", if s.disk == 0 { String::from("nothing") } else { bb_core::util::size_text(s.disk) }, s.path)).collect();
+    format!("{} processors, {} memory, {} disk{}, {} jobs, {} priority", c.cpu, bb_core::util::size_text(c.ram), bb_core::util::size_text(c.disk), drives, c.jobs, c.priority)
+}
+
 pub fn offer_text(c: &Config) -> String {
     // the drives besides the data folder, one line each
     let mut disk = if c.disk == 0 { String::from("nothing in the data folder") } else { bb_core::util::size_text(c.disk) };
@@ -248,7 +281,7 @@ pub fn offer_text(c: &Config) -> String {
         disk += &format!("\n  drive        {}   {}{}", s.path, if s.disk == 0 { String::new() } else { bb_core::util::size_text(s.disk) }, if state.is_empty() { String::new() } else { format!("   ({})", state) });
     }
     format!(
-        "  processors   {} of {}\n  memory       {} of {}\n  disk         {}\n  jobs at once {}\n  priority     {}\n  tidy up      {}\n  tags         {}\n  left running {}\n",
+        "  processors   {} of {}\n  memory       {} of {}\n  disk         {}\n  jobs at once {}\n  priority     {}\n  tidy up      {}\n  tags         {}\n  left running {}\n  set by       {}\n",
         c.cpu,
         plat::cpu_count(),
         bb_core::util::size_text(c.ram),
@@ -258,7 +291,8 @@ pub fn offer_text(c: &Config) -> String {
         c.priority,
         if c.keep_days == 0 { String::from("never by itself") } else { format!("projects unused for {} days are removed", c.keep_days) },
         if c.tags.is_empty() { String::from("-") } else { c.tags.join(", ") },
-        if c.leave_running { "jobs may start programs that go on after them (bb run --leave-running)" } else { "no: what a job starts ends with it (--leave-running yes allows it)" }
+        if c.leave_running { "jobs may start programs that go on after them (bb run --leave-running)" } else { "no: what a job starts ends with it (--leave-running yes allows it)" },
+        if c.offer_locked { "this machine only (--main-may-set yes lets the main machine, too)" } else { "this machine and the main machine (bb limits there; --main-may-set no stops it)" }
     )
 }
 

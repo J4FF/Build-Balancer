@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8};
 use bb_core::client::Relay;
 use bb_core::crypt::{self, DataKey};
 use bb_core::j::{self, Json, Value};
-use bb_core::proto::{self, Event, JobBrief, JobSpec, Offer, Tool, WorkerStatus};
+use bb_core::proto::{self, DriveOffer, Event, JobBrief, JobSpec, Offer, OfferChange, Tool, WorkerStatus};
 use bb_core::util::{now, size_text, tick_ms};
 use bb_exec::{Cores, CpuMeter};
 use plat::sync::{Condvar, Mutex};
@@ -95,6 +95,9 @@ pub struct Worker {
     pub unpaired: AtomicBool,
     /// why the last talk with the relay failed ("" while it works)
     pub relay_error: Mutex<String>,
+    /// the last change of the main machine's to what is lent: its id, and why it was not
+    /// taken ("": it was) -- told back in the status
+    pub offer_reply: Mutex<(String, String)>,
     meter: Mutex<CpuMeter>,
 }
 
@@ -280,6 +283,7 @@ impl Engine {
             online: AtomicBool::new(false),
             unpaired: AtomicBool::new(false),
             relay_error: Mutex::new(String::new()),
+            offer_reply: Mutex::new((String::new(), String::new())),
             meter: Mutex::new(CpuMeter::default()),
         });
         if !w.sched.lock().cores.pinning() {
@@ -560,8 +564,7 @@ fn reload_config(w: &Worker, seen: &mut i64) {
         return;
     }
     if *cur != new {
-        let drives: String = new.stores.iter().map(|s| format!(", {} on {}", if s.disk == 0 { String::from("nothing") } else { size_text(s.disk) }, s.path)).collect();
-        plat::log_info("worker", &format!("settings taken over: {} processors, {} memory, {} disk{}, {} jobs", new.cpu, size_text(new.ram), size_text(new.disk), drives, new.jobs));
+        plat::log_info("worker", &format!("settings taken over: {}", config::offer_line(&new)));
         *cur = new;
         drop(cur);
         w.sched.lock().dirty = true;
@@ -662,20 +665,27 @@ fn watch_memory(w: &Worker) {
 
 fn status(w: &Worker) -> WorkerStatus {
     let c = w.cfg.lock().clone();
-    // the disk: every place that lends something and is there, each volume counted once
-    let places: Vec<config::Place> = config::places(&w.dir, &c).into_iter().filter(|p| p.limit > 0).collect();
+    // Every place that is there, with what it lends and what the projects in it take -- and
+    // the drives named that are not there right now.  The disk in all: every place that lends
+    // something, each volume counted once.
     let (mut free, mut total, mut volumes) = (0u64, 0u64, Vec::new());
-    for p in &places {
+    let (mut drives, mut workspaces) = (Vec::new(), Vec::new());
+    for p in config::places(&w.dir, &c) {
         let at = if p.path.is_empty() { w.dir.as_str() } else { p.path.as_str() };
+        let (f, t) = plat::fs::free_space(at).unwrap_or((0, 0));
         let dev = plat::fs::stat(at).map_or(0, |m| m.dev);
-        if let Some((f, t)) = plat::fs::free_space(at).filter(|_| !volumes.contains(&dev)) {
+        if p.limit > 0 && !volumes.contains(&dev) {
             volumes.push(dev);
             free += f;
             total += t;
         }
+        let here = config::workspaces_in(&p.root);
+        drives.push(DriveOffer { path: p.path.clone(), lent: p.limit, used: here.iter().map(|x| x.bytes).sum(), free: f, total: t, there: true });
+        workspaces.extend(here);
     }
-    let lent_disk: u64 = places.iter().map(|p| p.limit).sum();
-    let workspaces = config::workspaces(&w.dir);
+    drives.extend(c.stores.iter().filter(|s| s.disk > 0 && !config::store_there(s)).map(|s| DriveOffer { path: s.path.clone(), lent: s.disk, ..DriveOffer::default() }));
+    let lent_disk: u64 = drives.iter().filter(|d| d.there).map(|d| d.lent).sum();
+    let (offer_change, offer_error) = w.offer_reply.lock().clone();
     // everything that asks the system or takes another lock comes before the scheduler's lock
     let (host, cpu_model, ram_free, cpu_busy) = (plat::net::hostname(), plat::cpu_brand(), bb_exec::sys::mem_available(), w.meter.lock().percent());
     let tools = w.tools.lock().clone();
@@ -702,6 +712,12 @@ fn status(w: &Worker) -> WorkerStatus {
         // (a light job reserves nothing at admission, but what it asked for still counts as held)
         ram_used: s.running.iter().map(|r| r.spec.ram.max(r.rss.load(Relaxed))).sum(),
         leave_running: c.leave_running,
+        // (anything but "normal" runs jobs low)
+        priority: String::from(if c.priority == "normal" { "normal" } else { "low" }),
+        drives,
+        offer_locked: c.offer_locked,
+        offer_change,
+        offer_error,
         disk_used: workspaces.iter().map(|x| x.bytes).sum(),
         enforce_cpu: String::from(if s.cores.pinning() { "affinity" } else { "hint" }),
         enforce_ram: String::from("watchdog"),
@@ -853,8 +869,58 @@ fn order(w: &Arc<Worker>, v: &Value) {
             w.restart.fetch_max(RESTART_UPDATE, Relaxed);
             w.wake.notify_all();
         }
+        proto::ORDER_OFFER => {
+            let Some(change) = v.get("change").and_then(OfferChange::from_json) else { return };
+            set_offer(w, &change);
+        }
         other => plat::log_warn("worker", &format!("an order of unknown kind \"{}\" was dropped (a newer main machine?)", other)),
     }
+}
+
+/// The main machine's change to what this machine lends: checked as `bb-worker config` checks
+/// its options, written to worker.json, taken over at once, and told back in the status.
+fn set_offer(w: &Worker, change: &OfferChange) {
+    if !change.id.is_empty() {
+        // an order read again after a restart must not undo what was set here since
+        let mut st = w.state.lock();
+        if st.seen.contains(&change.id) {
+            return;
+        }
+        st.seen.push(change.id.clone());
+        let extra = st.seen.len().saturating_sub(2000);
+        st.seen.drain(..extra);
+    }
+    let result = (|| -> Result<Config, String> {
+        // the settings as they are on disk: changed here a moment ago (the app, bb-worker
+        // config), they are what the change goes onto
+        let mut c = config::load(&w.dir).ok_or("worker.json cannot be read")?;
+        if c.offer_locked {
+            return Err(String::from("only this machine sets what it lends (its owner can allow it: in the app, or bb-worker config --main-may-set yes)"));
+        }
+        if config::apply_options(&mut c, &config::change_options(change), &w.dir)? {
+            cleanup::forget_given_up(&mut c);
+            config::save(&w.dir, &c)?;
+        }
+        Ok(c)
+    })();
+    let error = match result {
+        Ok(c) => {
+            plat::log_info("worker", &format!("the main machine set what is lent: {}", config::offer_line(&c)));
+            // (reload_config finds the file as it is here, and has nothing to take over)
+            let mut cur = w.cfg.lock();
+            if cur.id == c.id && *cur != c {
+                *cur = c;
+            }
+            String::new()
+        }
+        Err(e) => {
+            plat::log_warn("worker", &format!("a change of the main machine's to what is lent was not taken: {}", e));
+            e
+        }
+    };
+    *w.offer_reply.lock() = (change.id.clone(), error);
+    w.sched.lock().dirty = true;
+    w.wake.notify_all();
 }
 
 /// check a job and queue it

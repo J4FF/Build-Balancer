@@ -8,6 +8,10 @@ shot docs/img/this-machine.png
 # the main machine's workers, and the code for a new one
 click #21
 shot docs/img/machines.png
+# what another machine lends, set from here: the first card ("laptop"), with its sliders
+click #1158
+shot docs/img/machine-offer.png
+click #1162
 click #1002
 shot docs/img/pairing.png
 click #1012
