@@ -58,6 +58,12 @@ Nothing has to be installed first: the programs are single files, and one line f
 from the [latest release](https://github.com/J4FF/Build-Balancer/releases/latest), checks them
 and puts them on your PATH.
 
+On Debian and Ubuntu there is a package as well, with the app in the menu:
+[buildbalancer-linux-x86_64.deb](https://github.com/J4FF/Build-Balancer/releases/latest/download/buildbalancer-linux-x86_64.deb),
+then `sudo apt install ./buildbalancer-linux-x86_64.deb`.  Programs installed that way are
+the package manager's: a newer version comes with the next package, not with the update
+button or `bb update` (they say so).
+
 | | |
 | --- | --- |
 | Linux, macOS | `curl -fsSL https://github.com/J4FF/Build-Balancer/releases/latest/download/install.sh \| sh` |
@@ -458,6 +464,8 @@ The tests, all of which the CI (`.github/workflows/ci.yml`) runs on Windows, Lin
 | `tools/install-test.sh FOLDER` | packs a release on the spot and lets `install.sh` / `install.ps1` fetch, check and install it into a temporary folder |
 | `tools/update-test.sh FOLDER` | a "newer release" made on the spot: `bb update` installs it, a worker asked by the main machine fetches it and starts again by itself, a job that runs meanwhile runs to its end, an update that was cut short is taken back, a download that does not match its checksum changes nothing |
 | `tools/service-test.sh FOLDER` | installs the relay and the worker as services for real (Linux only; for a CI runner or a throwaway machine, as it needs root and removes Build Balancer's data folders) |
+| `tools/deb-test.sh FOLDER` | builds the Debian package of the programs, installs and removes it with apt for real, and checks that an update of its own is refused (Debian, Ubuntu; for a CI runner or a throwaway machine, as it needs sudo) |
+| `tools/mkdeb.py FOLDER VERSION` | the Debian package itself: the programs in /usr/bin, the app in the menu; only Python is needed, no dpkg |
 | `BuildBalancer --demo --script gui/tests/demo.uis` | walks through the app's pages without a display (its pictures go to `target/shots/`, which has to exist) |
 
 | Folder | What |

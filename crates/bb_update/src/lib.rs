@@ -180,6 +180,21 @@ pub fn check() -> Result<Check, String> {
     Ok(Check { current: String::from(bb_core::VERSION), newer: newer(&latest, bb_core::VERSION), latest })
 }
 
+/// Programs that the system's package manager put in `dir` (the .deb in /usr/bin) are its to
+/// replace: an update of their own would leave dpkg with the files of another version.  ->
+/// what to do instead
+pub fn package_managed(dir: &str) -> Option<String> {
+    let deb = cfg!(target_os = "linux") && dir.trim_end_matches('/') == "/usr/bin" && plat::fs::stat("/var/lib/dpkg/info/buildbalancer.list").is_some();
+    deb.then(|| {
+        format!(
+            "Build Balancer was installed here as a Debian package: install the new version's package instead -- {}/releases/latest/download/buildbalancer-linux-{}.deb, then  sudo apt install ./buildbalancer-linux-{}.deb",
+            bb_core::REPOSITORY,
+            bb_core::arch_name(),
+            bb_core::arch_name()
+        )
+    })
+}
+
 /// the folder the running program lies in
 pub fn own_dir() -> Option<String> {
     let exe = plat::current_exe()?;
@@ -422,6 +437,9 @@ fn tidy_locked(dir: &str) -> Result<(), String> {
 pub fn install(version: &str, dir: &str, say: &mut dyn FnMut(&str)) -> Result<Vec<String>, String> {
     if numbers(version).is_none() {
         return Err(format!("\"{}\" is no version", version));
+    }
+    if let Some(why) = package_managed(dir) {
+        return Err(why);
     }
     let (name, from) = (archive_name(), place(Some(version)));
     say("fetching the checksums");

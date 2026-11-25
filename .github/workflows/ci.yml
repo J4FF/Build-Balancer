@@ -67,6 +67,14 @@ jobs:
         env:
           BB_SERVICE_TEST: 1
         run: sh tools/service-test.sh target/${{ matrix.target }}/debug
+      # the Debian package: built by tools/mkdeb.py, installed and removed with apt, the app in
+      # the menu, and no update of its own over what the package manager installed
+      - name: The Debian package
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        env:
+          BB_DEB_TEST: 1
+        run: sh tools/deb-test.sh target/${{ matrix.target }}/debug
       - name: The desktop app's pages
         timeout-minutes: 5
         run: |

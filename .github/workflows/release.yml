@@ -67,6 +67,11 @@ jobs:
           else
             tar -czf "buildbalancer-${{ matrix.name }}.tar.gz" -C pack .
           fi
+          # Linux: a Debian package of the same programs as well (the app in the menu)
+          if [ "${{ matrix.name }}" = linux-x86_64 ]; then
+            version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+            SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) python3 tools/mkdeb.py pack "$version" --arch amd64 --out "buildbalancer-${{ matrix.name }}.deb"
+          fi
           ls -l buildbalancer-*
       - uses: actions/upload-artifact@v7
         with:
