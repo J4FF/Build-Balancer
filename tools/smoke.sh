@@ -280,6 +280,23 @@ check "... which goes on after the job's end" yes "$(wait_for 30 alive)"
 "$bb" cancel "$big" >/dev/null 2>&1
 wait_for 30 in_state "$big" cancelled >/dev/null
 
+# what a worker lends, set on the main machine: the worker checks it as its own command line,
+# says whether it took it -- and its owner can keep that to themselves
+"$bb" limits smoke-worker --cpu 1 --ram 512M --jobs 3 --priority normal >"$work/limits.out" 2>&1
+check "bb limits sets what a worker lends" 0 $?
+check "... the worker took it and says so" 1 "$(grep -c "jobs at once 3" "$work/limits.out")"
+check "... into its own settings" 1 "$(grep -c '"jobs": 3' "$work/worker/worker.json")"
+check "... and its log" 1 "$(grep -c "the main machine set what is lent: 1 processors, 512 MiB memory" "$work/worker/logs/worker.log")"
+"$bb" limits smoke-worker --priority fast >"$work/limits.out" 2>&1
+check "a value the worker does not take is refused, with its reason" 1 "$(grep -c "did not take the change: --priority takes low or normal" "$work/limits.out")"
+"$bin/bb-worker$ext" config --data "$work/worker" --main-may-set no >/dev/null
+locked() { "$bb" workers --json | grep -q '"main_may_set": false' && echo yes; }
+wait_for 30 locked >/dev/null || die "the worker did not say that it keeps what it lends to itself" "$work/worker.out"
+"$bb" limits smoke-worker --jobs 2 >"$work/limits.out" 2>&1
+check "... and none where its owner keeps that to themselves" 1 "$(grep -c "keeps what it lends to itself" "$work/limits.out")"
+check "... which lends what it did" 1 "$(grep -c '"jobs": 3' "$work/worker/worker.json")"
+"$bin/bb-worker$ext" config --data "$work/worker" --main-may-set yes >/dev/null
+
 # a list of workers that cannot be read is an error, not "no worker" (Linux, macOS: chmod;
 # the Windows case -- a file an administrator wrote -- needs one to test)
 if [ "$win" != 1 ] && [ "$(id -u)" != 0 ]; then
@@ -306,6 +323,8 @@ code=$(wait_for 20 second_code) || die "bb pair printed no code" "$work/pair2.ou
 check "join --no-run pairs and ends" 0 $?
 wait "$pair_pid" 2>/dev/null
 check "a paired machine that never ran gets a hint" 1 "$("$bb" workers | grep -c "smoke-idle: paired, but it never came online")"
+"$bb" limits smoke-idle --cpu 1 >"$work/limits.out" 2>&1
+check "... and a change of what it lends waits for it" 1 "$(grep -c "is offline: it takes the change over when it is back" "$work/limits.out")"
 
 echo
 if [ "$fails" = 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed"; fi

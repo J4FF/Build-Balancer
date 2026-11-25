@@ -50,6 +50,23 @@ expect text:"K7QF-2M9X-PD4T" exists
 shot target/shots/pairing.png
 click "Abbrechen"
 expect text:"K7QF-2M9X-PD4T" missing
+# what another machine lends, set from here: the second card's sliders (1100 + 64: "tower";
+# +58 opens them, +43 processors, +45/+46 its data folder and drive E:, +61 sends)
+size 1040 1180
+click #1222
+expect "Übernehmen" exists
+expect #1225 disabled
+expect text:"E:" exists
+expect text:"100 GiB für Projekte · 812 GiB frei" exists
+expect_nowarn
+shot target/shots/machine-offer.png
+click #1207
+expect #1225 enabled
+click #1225
+expect text:"In der Demo wird nichts verändert." exists
+expect "Übernehmen" missing
+wait 7000
+size 1040 760
 
 # jobs and one job's result
 click #22

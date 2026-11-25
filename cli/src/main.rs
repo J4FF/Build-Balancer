@@ -4,6 +4,8 @@
 //   bb pair                       add a worker: prints the command to run there, with a one-time code
 //   bb workers                    what every worker is, lends and does right now
 //   bb unpair WORKER
+//   bb limits WORKER [--cpu N] [--ram SIZE] [--disk SIZE] [--store DRIVE=SIZE] [--jobs N] [--priority P]
+//                                 what a worker lends, set from here (where its owner lets this machine)
 //   bb init                       make the current folder a project (writes buildbalancer.ini)
 //   bb run [options] COMMAND..    send the project to a worker, run COMMAND there, bring the outputs back
 //   bb task NAME.. | --all        run tasks of buildbalancer.ini, several at once on different workers
@@ -34,6 +36,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use bb_core::j::{self, Json, Value};
+use bb_core::proto::OfferChange;
 use bb_core::util::{err, out, size_text, Cli};
 // the library half of this program: its modules under the names the command files use
 use bb_main::conf::Ctx;
@@ -65,6 +68,9 @@ fn usage() -> String {
          bb pair [--minutes N]                 add a worker (prints the command for that machine)\n\
          bb workers                            what the workers are, lend and do\n\
          bb unpair WORKER\n\
+         bb limits WORKER [options]            what a worker lends; change it from here (where its owner lets you):\n\
+         \x20   --cpu N|P%  --ram SIZE|P%  --disk SIZE|P% (in its data folder)  --jobs N  --priority low|normal\n\
+         \x20   --store DRIVE=SIZE|off    a drive of its own   --no-wait   --timeout 30s\n\
          \n\
          bb init [--name NAME]                 make this folder a project\n\
          bb run [options] [--] COMMAND ARGS..  run a command on a worker\n\
@@ -125,6 +131,7 @@ fn main_cmd() -> i32 {
         "pair" => pair(rest, json),
         "workers" | "ls" => workers(rest),
         "unpair" => unpair(rest),
+        "limits" => limits(rest),
         "init" => init(rest),
         "relay" => relay_cmd(rest),
         "run" => run::run(rest, json),
@@ -310,6 +317,67 @@ fn workers(args: &[String]) -> CmdResult {
     let json = j::obj([("relay", j::s(&ctx.main.relay)), ("workers", Value::Array(views.iter().map(fleet::view_json).collect()))]);
     let text = if views.is_empty() { String::from("No worker is paired yet.  `bb pair` adds one.\n") } else { fleet::table(&views) };
     Ok(Reply::ok(text, json))
+}
+
+const LIMITS_USAGE: &str = "bb limits WORKER [--cpu N|P%] [--ram SIZE|P%] [--disk SIZE|P%] [--store DRIVE=SIZE|off] [--jobs N] [--priority low|normal]";
+
+/// bb limits WORKER [options]: what a worker lends, and a change to it -- where its owner lets
+/// this machine.  The worker checks the values as `bb-worker config` there would; this waits
+/// until it says whether it took them.
+fn limits(args: &[String]) -> CmdResult {
+    let cli = parse(args, &["--cpu", "--ram", "--disk", "--store", "--jobs", "--priority", "--timeout"], &["--no-wait"], &[], false)?;
+    let ctx = ctx(&cli)?;
+    let name = cli.pos.first().ok_or(LIMITS_USAGE)?;
+    let w = ctx.worker(name)?.clone();
+    let view = |ctx: &Ctx| -> Result<fleet::WorkerView, String> { fleet::fleet(ctx)?.into_iter().find(|v| v.paired.id == w.id).ok_or_else(|| format!("\"{}\" is no longer paired", w.name)) };
+    let v = view(&ctx)?;
+    let value = |n: &str| String::from(cli.value(n).unwrap_or(""));
+    let mut change = OfferChange { cpu: value("--cpu"), ram: value("--ram"), disk: value("--disk"), stores: cli.values("--store"), jobs: value("--jobs"), priority: value("--priority"), ..OfferChange::default() };
+    if change.is_empty() {
+        let Some(s) = &v.status else {
+            return Err(format!("\"{}\" has not reported yet: what it lends shows once it runs there", w.name));
+        };
+        return Ok(Reply::ok(format!("\"{}\" lends:\n{}\nchange it:  {}\n", w.name, fleet::offer_text(s), LIMITS_USAGE), fleet::view_json(&v)));
+    }
+    if let Some(s) = &v.status {
+        if s.drives.is_empty() {
+            return Err(format!("\"{}\" runs version {}, which cannot be told what to lend yet: `bb update -w {}` first", w.name, s.version, w.name));
+        }
+        if s.offer_locked {
+            return Err(format!("\"{}\" keeps what it lends to itself: its owner can let this machine set it (the switch in the app there, or  bb-worker config --main-may-set yes)", w.name));
+        }
+    }
+    let id = ops::set_offer(&ctx, &w, &mut change)?;
+    let sent = j::obj([("ok", Value::Bool(true)), ("change", j::s(&id)), ("taken", Value::Bool(false)), ("worker", j::s(&w.name))]);
+    if !v.online {
+        return Ok(Reply::ok(format!("\"{}\" is offline: it takes the change over when it is back (bb limits {} shows what it lends).\n", w.name, w.name), sent));
+    }
+    if cli.flag("--no-wait") {
+        return Ok(Reply::ok(format!("Sent to \"{}\": it takes the change over within seconds (bb limits {} shows what it lends).\n", w.name, w.name), sent));
+    }
+    // its status names the change once it handled it
+    let secs = match cli.value("--timeout") {
+        Some(t) => bb_core::util::dur_parse(t).ok_or("--timeout takes a duration like 30s or 2m")?,
+        None => 30,
+    };
+    let end = bb_core::util::tick_ms() + secs * 1000;
+    loop {
+        plat::sleep_ms(1000);
+        let v = view(&ctx)?;
+        if let Some(s) = v.status.as_ref().filter(|s| s.offer_change == id) {
+            if !s.offer_error.is_empty() {
+                return Err(format!("\"{}\" did not take the change: {}", w.name, s.offer_error));
+            }
+            let mut doc = fleet::view_json(&v);
+            doc.insert("ok", Value::Bool(true));
+            doc.insert("change", j::s(&id));
+            doc.insert("taken", Value::Bool(true));
+            return Ok(Reply::ok(format!("\"{}\" now lends:\n{}", w.name, fleet::offer_text(s)), doc));
+        }
+        if bb_core::util::tick_ms() >= end {
+            return Err(format!("the change is sent, but \"{}\" did not answer within {}: it takes it over as soon as it reads its orders (bb limits {} shows what it lends)", w.name, bb_core::util::dur_text(secs * 1000), w.name));
+        }
+    }
 }
 
 fn unpair(args: &[String]) -> CmdResult {

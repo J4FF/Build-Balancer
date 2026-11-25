@@ -367,6 +367,20 @@ dropped fails with a message that says so, and sending the project again repairs
   the drive letters with a medium on Windows, what is mounted from a drive on Linux
   (`/proc/mounts`, without the system's own and network mounts), `/` and `/Volumes/*` on
   macOS.
+- **Set from the main machine.** The order `offer.set` carries an `OfferChange`: what is
+  to be lent from now on, each value written as `bb-worker config` takes it ("8", "50%",
+  "16G", "E:/=off"; "" leaves it as it is), so a share is resolved on the machine it is a
+  share of. The worker reads worker.json as it is on disk, runs the change through the same
+  `config::apply_options` as its command line (`config::change_options`: processors,
+  memory, disk, drives, jobs at once, priority -- not `leave_running`, the name, or the
+  switch itself), writes the file, takes it over at once and puts the change's id and, when
+  it refused it, the reason into its status (`offer_change`, `offer_error`). `bb limits`
+  and the app wait for that. The change's id goes into `State::seen` like a job's: an order
+  read again after a restart does not undo what was set on the machine since. Its status
+  lists every place (`drives`: what is lent, used and free there) and `priority`, which the
+  sliders on the main machine start from; a worker before 0.1.7 has no `drives` and is not
+  sent the order. `Config::offer_locked` (`--main-may-set no`, the switch in the app) has
+  the worker refuse every such change, and its status says so beforehand.
 
 ## Built on JFLib
 

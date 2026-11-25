@@ -103,6 +103,10 @@ Tidying up.  A worker keeps a project (its files and the build output that grew 
 the next job.  bb clean -w NAME removes this project there, bb clean --all on every worker;
 the next job simply sends it again.  Workers also drop projects nobody used for some days.
 
+What a worker lends is its owner's call.  When your person asks for it, bb limits NAME
+--cpu N --ram SIZE --disk SIZE --jobs N changes it from here (where that machine's owner
+allows it: main_may_set in bb workers --json); never on your own to make a job fit.
+
 Rules of thumb.
   - Look at bb workers before every batch: owners change what they lend, machines go offline.
   - Respect \"idle\": cpu.idle and ram.idle are what running jobs leave free of what is lent.

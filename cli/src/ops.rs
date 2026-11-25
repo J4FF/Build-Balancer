@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use bb_core::client::Relay;
 use bb_core::crypt::{self, Keys};
 use bb_core::j::{self, Json};
-use bb_core::proto::{self, Device, Hello, Welcome, ROLE_WORKER};
+use bb_core::proto::{self, Device, Hello, OfferChange, Welcome, ROLE_WORKER};
 use bb_core::util::{now, tick_ms};
 
 use crate::conf::{self, Ctx, MainConfig, PairedWorker, Project};
@@ -210,6 +210,23 @@ pub fn ask_update(ctx: &Ctx, worker: &PairedWorker) -> Result<(), String> {
     let order = proto::order(proto::ORDER_UPDATE, j::obj([("version", j::s(bb_core::VERSION))]));
     ctx.relay.ch_append(&inbox, &crypt::seal(&key, &crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes()))?;
     Ok(())
+}
+
+/// Tell a worker to lend something else (an empty id is given one) -> the change's id, which
+/// the worker's status names once it has handled it (WorkerStatus::offer_change, offer_error).
+/// One that is offline takes it when it is back.
+pub fn set_offer(ctx: &Ctx, worker: &PairedWorker, change: &mut OfferChange) -> Result<String, String> {
+    if change.is_empty() {
+        return Err(String::from("nothing to change"));
+    }
+    if change.id.is_empty() {
+        change.id = bb_core::util::new_id("o");
+    }
+    let key = ctx.pair_key(worker).ok_or("the worker's key is damaged")?;
+    let inbox = proto::inbox(&worker.id);
+    let order = proto::order(proto::ORDER_OFFER, j::obj([("change", change.to_json())]));
+    ctx.relay.ch_append(&inbox, &crypt::seal(&key, &crypt::aad(&ctx.main.id, &inbox), j::text(&order).as_bytes()))?;
+    Ok(change.id.clone())
 }
 
 /// ask a worker to remove a project's files (`slot` "": all of its copies, and its jobs' folders)

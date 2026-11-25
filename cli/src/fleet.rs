@@ -190,12 +190,49 @@ pub fn view_json(v: &WorkerView) -> Value {
     o.insert("disk", j::obj([("lent", j::n(s.offer.disk)), ("used", j::n(s.disk_used)), ("free_on_volume", j::n(s.disk_free))]));
     o.insert("limits_held_by", j::obj([("cpu", j::s(&s.enforce_cpu)), ("ram", j::s(&s.enforce_ram)), ("disk", j::s(&s.enforce_disk))]));
     o.insert("jobs_at_once", j::n(s.offer.jobs as u64));
+    o.insert("priority", j::s(&s.priority));
+    o.insert("drives", Value::Array(s.drives.iter().map(|d| d.to_json()).collect()));
+    // whether `bb limits` can change what it lends (false: too old, or its owner keeps it to itself)
+    o.insert("main_may_set", Value::Bool(s.offer_settable()));
     o.insert("running", jobs(&s.running));
     o.insert("queued", jobs(&s.queued));
     o.insert("tools", Value::Object(s.tools.iter().map(|t| (t.name.clone(), j::s(&t.version))).collect()));
     o.insert("tags", j::strs(&s.tags));
     o.insert("workspaces", Value::Array(s.workspaces.iter().map(|w| w.to_json()).collect()));
     o
+}
+
+/// what a worker lends, one line each, as `bb limits WORKER` prints it
+pub fn offer_text(s: &WorkerStatus) -> String {
+    let mut disk = String::new();
+    for d in &s.drives {
+        let place = if d.path.is_empty() { String::from("in the data folder") } else { format!("on {}", d.path) };
+        let lent = if d.lent == 0 { String::from("nothing") } else { size_text(d.lent) };
+        let state = if !d.there { String::from("not there right now") } else { format!("{} used, {} free", size_text(d.used), size_text(d.free)) };
+        disk += &format!("{}{} {} ({})\n", if disk.is_empty() { "" } else { "               " }, lent, place, state);
+    }
+    if disk.is_empty() {
+        // (a worker before 0.1.7 tells the sum only)
+        disk = format!("{}\n", size_text(s.offer.disk));
+    }
+    let set_by = if s.drives.is_empty() {
+        format!("that machine only: version {} cannot be told yet (bb update -w)", s.version)
+    } else if s.offer_locked {
+        String::from("that machine only: its owner keeps it to themselves (bb-worker config --main-may-set yes there allows it)")
+    } else {
+        String::from("that machine and this one (bb limits)")
+    };
+    format!(
+        "  processors   {} of {}\n  memory       {} of {}\n  disk         {}  jobs at once {}\n  priority     {}\n  set by       {}\n",
+        s.offer.cpu,
+        s.cpu_total,
+        size_text(s.offer.ram),
+        size_text(s.ram_total),
+        disk,
+        s.offer.jobs,
+        if s.priority.is_empty() { "?" } else { &s.priority },
+        set_by
+    )
 }
 
 /// the table `bb workers` prints
